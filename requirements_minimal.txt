@@ -1,0 +1,35 @@
+# Core MCP and FastAgent dependencies - Minimal & Compatible Version
+# Based on: https://github.com/NassimAnemiche/Security-agent-in-VANETs-AI-Based-Intrusion-Detection
+
+# MCP Core
+mcp==1.9.4
+fast-agent-mcp==0.2.34
+fastmcp==2.8.1
+
+# FastAPI and HTTP
+fastapi==0.115.13
+uvicorn==0.34.3
+httpx==0.28.1
+httpx-sse==0.4.0
+sse-starlette==2.3.6
+
+# SUMO TraCI
+traci>=1.0
+
+# Data & Config
+pydantic==2.11.7
+pydantic-settings==2.9.1
+pandas==2.3.0
+openpyxl==3.1.5
+PyYAML==6.0.2
+
+# LLM Integrations
+ollama==0.5.1
+anthropic==0.54.0
+openai==1.88.0
+
+# Utilities
+python-dotenv==1.1.0
+typer==0.16.0
+click==8.2.1
+rich==14.0.0

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2025-06-19 13:24:05 by Eclipse SUMO netedit Version 1.20.0KRauss
+-->
+
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- VTypes -->
+    <vType id="car" length="5.00" maxSpeed="70.00" emissionClass="HBEFA4/PC_petrol_ltECE" accel="2.6" decel="4.5" sigma="0.5" startupDelay="2" carFollowModel="CACC"/>
+    <vType id="bus" length="12.0" width="2.5" maxSpeed="80.00" emissionClass="HBEFA4/UBus_Std_gt15-18t_Euro-VI_A-C" accel="1.5" decel="4.0" sigma="0.5" startupDelay="3" mass="12000" minGap="2.5" personCapacity="80" color="blue"/>  
+    <!-- Routes -->
+    <route id="d_l" edges="657488633#0 657488633#0.77 E0 657488633#0.174.4 657488635 -192004921#11 -192004921#8"/>
+    <route id="d_u" edges="657488633#0 657488633#0.77 E0 657488633#0.174.4 657488633#1"/>
+    <route id="l_d" edges="192004921#8 192004921#9 192004921#9.12 116888943#3 116888943#4"/>
+    <route id="u_d" edges="116888943#0.5518.58 116888943#0.5518.58.102 116888943#2 116888943#3 116888943#4"/>
+    <!-- Vehicles, persons and containers (sorted by depart) -->
+    <flow id="f_0" type="car" begin="0.00" route="d_u" end="3600.00" vehsPerHour="1323.04299889746403096069"/>
+    <flow id="f_1" type="car" begin="0.00" route="d_l" end="3600.00" vehsPerHour="116.001804472514024269"/>
+    <flow id="f_2" type="car" begin="0.00" route="u_d" end="3600.00" vehsPerHour="905.88827377956715736218"/>
+    <flow id="f_3" type="car" begin="0.00" route="l_d" end="3600.00" vehsPerHour="87.00065250489379309329"/>
+</routes>

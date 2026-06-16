@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VANET Realtime Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <style>
+      :root {
+        --bg: #f4efe6;
+        --panel: #fffaf0;
+        --ink: #1f2937;
+        --ink-soft: #4b5563;
+        --accent: #d97706;
+        --accent-2: #0f766e;
+        --danger: #b91c1c;
+        --grid: #e5dccd;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: var(--ink);
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at 8% 8%, #ffe8c6 0, transparent 35%),
+          radial-gradient(circle at 92% 18%, #b6f0ea 0, transparent 30%),
+          var(--bg);
+      }
+      .wrap {
+        max-width: 1200px;
+        margin: 24px auto;
+        padding: 0 16px 24px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: clamp(1.4rem, 2.7vw, 2.1rem);
+        letter-spacing: 0.02em;
+      }
+      .subtitle {
+        margin: 0 0 16px;
+        color: var(--ink-soft);
+      }
+      .grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--grid);
+        border-radius: 14px;
+        padding: 12px;
+      }
+      .label { color: var(--ink-soft); font-size: 0.84rem; }
+      .value { font-size: 1.5rem; font-weight: 700; margin-top: 4px; }
+      .controls {
+        margin-top: 12px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .select {
+        min-width: 240px;
+        border: 1px solid var(--grid);
+        border-radius: 9px;
+        padding: 9px 12px;
+        background: #fff;
+        color: var(--ink);
+      }
+      button {
+        border: 0;
+        border-radius: 9px;
+        cursor: pointer;
+        padding: 9px 12px;
+        font-weight: 600;
+        color: #fff;
+        background: var(--accent);
+      }
+      button.alt { background: var(--accent-2); }
+      button.danger { background: var(--danger); }
+      .statusline {
+        margin-top: 8px;
+        color: var(--ink-soft);
+        font-size: 0.92rem;
+      }
+      .row {
+        margin-top: 12px;
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr;
+      }
+      .table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.92rem;
+      }
+      .table th, .table td {
+        text-align: left;
+        padding: 8px;
+        border-bottom: 1px solid var(--grid);
+      }
+      .ok { color: #166534; }
+      .bad { color: #991b1b; }
+      @media (min-width: 900px) {
+        .row { grid-template-columns: 2fr 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>VANET Live Monitor</h1>
+      <p class="subtitle">Comparaison temps réel: simulation classique vs simulation perturbée</p>
+
+      <div class="grid">
+        <div class="card"><div class="label">Simulation Time</div><div class="value" id="simTime">-</div></div>
+        <div class="card"><div class="label">Vehicles</div><div class="value" id="vehicles">-</div></div>
+        <div class="card"><div class="label">Average Speed</div><div class="value" id="avgSpeed">-</div></div>
+        <div class="card"><div class="label">Stopped Ratio</div><div class="value" id="stopRatio">-</div></div>
+        <div class="card"><div class="label">Active Attacks</div><div class="value" id="attacks">-</div></div>
+      </div>
+
+      <div class="grid" id="metricGrid" style="margin-top: 12px"></div>
+
+      <div class="row">
+        <div class="card">
+          <h3 style="margin-top: 0">Live vs Baseline</h3>
+          <canvas id="speedChart" height="120"></canvas>
+          
+          <div class="controls" style="gap: 8px; margin-top: 12px;">
+            <button id="zoomInBtn" class="alt" title="Zoom in">🔍+</button>
+            <button id="zoomOutBtn" class="alt" title="Zoom out">🔍−</button>
+            <button id="panBtn" class="alt" title="Pan/Move">↔</button>
+            <button id="selectZoneBtn" class="alt" title="Select zone">⬜</button>
+            <button id="resetViewBtn" class="alt" title="Reset view">🏠</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-top: 0">Comparison</h3>
+          <table class="table" id="compareTable">
+            <thead><tr><th>Metric</th><th>Live</th><th>Baseline</th><th>Delta</th><th>Trend</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

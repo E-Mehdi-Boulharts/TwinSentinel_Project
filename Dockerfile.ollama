@@ -1,0 +1,13 @@
+FROM ollama/ollama:latest
+
+# Set environment for the container
+ENV OLLAMA_HOST=0.0.0.0:11434
+
+# Expose the Ollama port
+EXPOSE 11434
+
+# Create entrypoint that handles startup gracefully
+RUN mkdir -p /root/.ollama
+
+# Start Ollama with error handling
+ENTRYPOINT ["sh", "-c", "ollama serve"]

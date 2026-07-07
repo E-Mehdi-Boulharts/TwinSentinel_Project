@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<!-- generated on 2026-04-28T12:33:55.461921+00:00 by Eclipse SUMO GUI 1.26.0
+<!-- generated on 2026-06-25T13:06:49.550447+00:00 by Eclipse SUMO GUI 1.26.0
 <sumoConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
 
     <input>
@@ -16,11 +16,10 @@
 
     <time>
         <begin value="0"/>
-        <step-length value="0.05"/>
+        <step-length value="1"/>
     </time>
 
     <processing>
-        <lateral-resolution value="0.1"/>
         <ignore-junction-blocker value="20"/>
         <time-to-teleport value="600"/>
         <max-depart-delay value="600"/>
@@ -35,21 +34,11 @@
 
     <report>
         <verbose value="true"/>
-        <no-warnings value="true"/>
         <log value="/home/mehdi/VANET_Project/Docker_files/luxembourg/dua.static.log"/>
     </report>
-
-    <traci_server>
-        <remote-port value="55001"/>
-    </traci_server>
-
-    <gui_only>
-        <delay value="1000"/>
-    </gui_only>
 
 </sumoConfiguration>
 -->
 
 <tripinfos xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/tripinfo_file.xsd">
-    <tripinfo id="randUni834:1" depart="5.00" departLane="--32406#3_0" departPos="44.28" departPosLat="0.00" departSpeed="0.00" departDelay="0.00" arrival="39.45" arrivalLane="--31212_0" arrivalPos="134.87" arrivalPosLat="0.00" arrivalSpeed="0.94" duration="34.45" routeLength="419.00" waitingTime="0.00" waitingCount="0" stopTime="0.00" timeLoss="4.60" rerouteNo="0" devices="tripinfo_randUni834:1" vType="passenger2b" speedFactor="1.01" vaporized=""/>
 </tripinfos>

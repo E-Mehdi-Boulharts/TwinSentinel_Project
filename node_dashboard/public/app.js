@@ -18,8 +18,8 @@ const vehiclesEl = document.getElementById("vehicles");
 const avgSpeedEl = document.getElementById("avgSpeed");
 const stopRatioEl = document.getElementById("stopRatio");
 const attacksEl = document.getElementById("attacks");
-const metricGrid = document.getElementById("metricGrid");
 const compareTableBody = document.querySelector("#compareTable tbody");
+const mapSelect = document.getElementById("mapSelect");
 
 const HISTORY_ATTACKED_KEY = "vanetAttackedHistory";
 const SELECTED_METRIC_KEY = "vanetSelectedMetric";
@@ -35,18 +35,6 @@ const state = {
 };
 
 let metricChart = null;
-let chartMouseDown = false;
-let chartStartX = 0;
-let chartStartY = 0;
-let chartStartViewMinX = 0;
-let chartStartViewMaxX = 600;
-let chartStartViewMinY = 0;
-let chartStartViewMaxY = 0;
-let selectZoneStartX = 0;
-let selectZoneStartY = 0;
-let overlayCanvas = null;
-let overlayCtx = null;
-let activeMode = null;
 
 function loadStoredHistory(key) {
   try {
@@ -87,11 +75,30 @@ function seriesToPoints(history, metric) {
   );
 }
 
+function downsampleToSeconds(history) {
+  if (!history || !history.length) return [];
+  const sampled = [];
+  for (let i = 0; i < history.length; i++) {
+    const pt = history[i];
+    const t = getPointTime(pt);
+    const sec = Math.floor(t);
+
+    const nextPt = history[i + 1];
+    const nextSec = nextPt ? Math.floor(getPointTime(nextPt)) : -1;
+
+    if (nextSec !== sec) {
+      sampled.push(pt);
+    }
+  }
+  return sampled;
+}
+
 function averageMetricUpToTime(history, metric, maxTime) {
   const limit = Number(maxTime);
   if (!Number.isFinite(limit)) return 0;
 
-  const filtered = (history || []).filter((point) => getPointTime(point) <= limit);
+  const sampled = downsampleToSeconds(history);
+  const filtered = sampled.filter((point) => getPointTime(point) <= limit);
   if (!filtered.length) return 0;
 
   const total = filtered.reduce((sum, point) => sum + getMetricValue(point, metric), 0);
@@ -100,39 +107,6 @@ function averageMetricUpToTime(history, metric, maxTime) {
 
 function getAverageSnapshot(history, metric, maxTime) {
   return averageMetricUpToTime(history, metric, maxTime);
-}
-
-function getSnapshotAtTime(history, maxTime) {
-  const limit = Number(maxTime);
-  if (!Number.isFinite(limit)) return null;
-
-  let snapshot = null;
-  for (const point of history || []) {
-    if (getPointTime(point) <= limit) snapshot = point;
-    else break;
-  }
-  return snapshot;
-}
-
-function getValueAtTime(history, metric, maxTime) {
-  const snapshot = getSnapshotAtTime(history, maxTime);
-  return getMetricValue(snapshot, metric);
-}
-
-function latestPoint(history) {
-  return history && history.length ? history[history.length - 1] : null;
-}
-
-function findBaselinePointAt(time) {
-  if (!state.baselineHistory || !state.baselineHistory.length) return null;
-  let best = null;
-  for (let i = 0; i < state.baselineHistory.length; i += 1) {
-    const pt = state.baselineHistory[i];
-    const t = getPointTime(pt);
-    if (t <= time) best = pt;
-    else break;
-  }
-  return best || state.baselineHistory[0];
 }
 
 function formatValue(metric, value) {
@@ -177,42 +151,6 @@ function updateTopCards() {
   attacksEl.textContent = Number.isFinite(attackCount) ? `${attackCount}` : "0";
 }
 
-function renderMetricGrid() {
-  if (!metricGrid) return;
-
-  const latestLive = latestPoint(state.liveHistory);
-  const currentTime = latestLive ? getPointTime(latestLive) : 0;
-
-  metricGrid.innerHTML = Object.entries(METRICS)
-    .map(([metric, config]) => {
-      const liveValue = getAverageSnapshot(state.liveHistory, metric, currentTime);
-      const baselineValue = getAverageSnapshot(state.baselineHistory, metric, currentTime);
-      const activeClass = metric === state.selectedMetric
-        ? 'style="border-color: #d97706; box-shadow: 0 0 0 2px rgba(217,119,6,0.15);"'
-        : "";
-
-      return `
-        <div class="card metric-card" data-metric="${metric}" ${activeClass}>
-          <div class="label">${config.label}</div>
-          <div class="value">${formatValue(metric, liveValue)}</div>
-          <div class="label">Avg live: ${formatValue(metric, liveValue)}</div>
-          <div class="label">Avg baseline: ${formatValue(metric, baselineValue)}</div>
-        </div>
-      `;
-    })
-    .join("");
-
-  metricGrid.querySelectorAll(".metric-card").forEach((card) => {
-    card.addEventListener("click", () => {
-      const metric = card.getAttribute("data-metric");
-      if (!metric || !METRICS[metric]) return;
-      state.selectedMetric = metric;
-      localStorage.setItem(SELECTED_METRIC_KEY, metric);
-      applyAllViews();
-    });
-  });
-}
-
 function renderComparisonTable() {
   if (!compareTableBody) return;
 
@@ -225,20 +163,29 @@ function renderComparisonTable() {
     const baselineValue = getAverageSnapshot(state.baselineHistory, metric, currentTime);
     const delta = liveValue - baselineValue;
     const trend = delta < 0 ? "better" : delta > 0 ? "worse" : "same";
-    const trendClass = trend === "better" ? "ok" : trend === "worse" ? "bad" : "";
+    const trendClass = trend === "better" ? "trend-better" : trend === "worse" ? "trend-worse" : "trend-same";
     const arrow = delta < 0 ? "▼" : delta > 0 ? "▲" : "→";
     const arrowColor = delta < 0 ? "ok" : delta > 0 ? "bad" : "";
     const deltaPercentText = formatDeltaPercent(liveValue, baselineValue);
     const comparisonText = deltaPercentText === "n/a" ? `${arrow} n/a` : `${arrow} ${deltaPercentText}`;
+    const isActive = metric === state.selectedMetric;
 
     const row = document.createElement("tr");
+    if (isActive) {
+      row.classList.add("active-row");
+    }
     row.innerHTML = `
-      <td>${config.label}</td>
+      <td style="font-weight: 500;">${config.label}</td>
       <td>${formatValue(metric, liveValue)}</td>
       <td>${formatValue(metric, baselineValue)}</td>
       <td class="${arrowColor}">${comparisonText}</td>
-      <td class="${trendClass}">${trend}</td>
+      <td><span class="${trendClass}">${trend}</span></td>
     `;
+    row.addEventListener("click", () => {
+      state.selectedMetric = metric;
+      localStorage.setItem(SELECTED_METRIC_KEY, metric);
+      applyAllViews();
+    });
     compareTableBody.appendChild(row);
   });
 }
@@ -255,19 +202,19 @@ function initChart() {
         {
           label: "Baseline",
           data: [],
-          borderColor: "#22c55e",
-          borderWidth: 2,
+          borderColor: "#06b6d4",
+          borderWidth: 2.5,
           pointRadius: 0,
-          tension: 0,
+          tension: 0.1,
           fill: false,
         },
         {
-          label: "Live",
+          label: "Attack",
           data: [],
-          borderColor: "#f97316",
-          borderWidth: 2,
+          borderColor: "#ec4899",
+          borderWidth: 2.5,
           pointRadius: 0,
-          tension: 0,
+          tension: 0.1,
           fill: false,
         },
       ],
@@ -279,239 +226,142 @@ function initChart() {
       scales: {
         x: {
           type: "linear",
-          title: { display: true, text: "Time (s)" },
+          title: {
+            display: true,
+            text: "Time (s)",
+            color: "#475569",
+            font: { family: "Outfit", size: 13, weight: "bold" }
+          },
+          grid: {
+            color: "rgba(0, 0, 0, 0.08)"
+          },
+          ticks: {
+            color: "#475569",
+            font: { family: "Outfit" }
+          },
           min: 0,
-          max: 600,
+          max: 300,
         },
         y: {
-          title: { display: true, text: "Metric Value" },
+          title: {
+            display: true,
+            text: "Metric Value",
+            color: "#475569",
+            font: { family: "Outfit", size: 13, weight: "bold" }
+          },
+          grid: {
+            color: "rgba(0, 0, 0, 0.08)"
+          },
+          ticks: {
+            color: "#475569",
+            font: { family: "Outfit" }
+          }
         },
       },
       plugins: {
-        legend: { display: true, position: "top" },
+        legend: {
+          display: true,
+          position: "top",
+          labels: {
+            color: "#0f172a",
+            font: { family: "Outfit", size: 12, weight: "500" }
+          }
+        },
+        zoom: {
+          pan: {
+            enabled: true,
+            mode: 'x',
+            modifierKey: 'shift',
+          },
+          zoom: {
+            drag: {
+              enabled: true,
+              backgroundColor: 'rgba(99, 102, 241, 0.15)',
+              borderColor: 'rgba(99, 102, 241, 0.4)',
+              borderWidth: 1,
+            },
+            wheel: {
+              enabled: true,
+              speed: 0.05,
+            },
+            pinch: {
+              enabled: true
+            },
+            mode: 'x',
+          }
+        }
       },
     },
   });
 
-  overlayCanvas = document.createElement("canvas");
-  overlayCanvas.style.position = "absolute";
-  overlayCanvas.style.cursor = "crosshair";
-  overlayCanvas.style.pointerEvents = "none";
-  overlayCanvas.style.top = "0";
-  overlayCanvas.style.left = "0";
-  overlayCanvas.id = "speedChartOverlay";
-  overlayCanvas.width = canvas.width;
-  overlayCanvas.height = canvas.height;
+  // Provide visual feedback for cursor shift
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Shift") {
+      canvas.style.cursor = "grab";
+    }
+  });
 
-  canvas.parentElement.style.position = "relative";
-  canvas.parentElement.insertBefore(overlayCanvas, canvas.nextSibling);
-  overlayCtx = overlayCanvas.getContext("2d");
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "Shift") {
+      canvas.style.cursor = "default";
+    }
+  });
+
+  // Trackpad horizontal swipe to pan horizontally
+  canvas.addEventListener("wheel", (e) => {
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      e.preventDefault();
+      if (metricChart) {
+        const xMin = metricChart.options.scales.x.min ?? 0;
+        const xMax = metricChart.options.scales.x.max ?? 300;
+        const range = xMax - xMin;
+        const shift = (e.deltaX / canvas.clientWidth) * range * 0.5;
+        metricChart.options.scales.x.min = xMin + shift;
+        metricChart.options.scales.x.max = xMax + shift;
+        metricChart.update("none");
+      }
+    }
+  }, { passive: false });
 }
 
 function renderChart() {
   if (!metricChart) return;
 
   const metric = state.selectedMetric;
+  const config = METRICS[metric];
+  const chartTitleEl = document.getElementById("chartTitle");
+  if (chartTitleEl && config) {
+    chartTitleEl.textContent = `Attack vs Baseline - ${config.label}`;
+  }
+
   const baselinePoints = seriesToPoints(state.baselineHistory, metric);
   const livePoints = seriesToPoints(state.liveHistory, metric);
 
   metricChart.data.datasets[0].data = baselinePoints;
   metricChart.data.datasets[1].data = livePoints;
-  metricChart.options.plugins.title = {
-    display: true,
-    text: `${METRICS[metric] ? METRICS[metric].label : metric}`,
-  };
+
+  if (metricChart.options.plugins.zoom) {
+    // If the chart isn't zoomed, update scale bounds to match simulation length
+    const maxTime = Math.max(
+      baselinePoints.length ? baselinePoints[baselinePoints.length - 1].x : 300,
+      livePoints.length ? livePoints[livePoints.length - 1].x : 300
+    );
+    if (metricChart.scales.x.min === 0 && metricChart.scales.x.max === 300 && maxTime > 305) {
+      metricChart.options.scales.x.max = Math.ceil(maxTime / 100) * 100;
+    }
+  }
+
   metricChart.update("none");
+}
+
+function latestPoint(history) {
+  return history && history.length ? history[history.length - 1] : null;
 }
 
 function applyAllViews() {
   updateTopCards();
   renderChart();
-  renderMetricGrid();
   renderComparisonTable();
-}
-
-function updateButtonStyles() {
-  const zoomInBtn = document.getElementById("zoomInBtn");
-  const zoomOutBtn = document.getElementById("zoomOutBtn");
-  const panBtn = document.getElementById("panBtn");
-  const selectZoneBtn = document.getElementById("selectZoneBtn");
-
-  if (zoomInBtn) zoomInBtn.style.opacity = activeMode === "zoomIn" ? "1" : "0.6";
-  if (zoomOutBtn) zoomOutBtn.style.opacity = activeMode === "zoomOut" ? "1" : "0.6";
-  if (panBtn) panBtn.style.opacity = activeMode === "pan" ? "1" : "0.6";
-  if (selectZoneBtn) selectZoneBtn.style.opacity = activeMode === "selectZone" ? "1" : "0.6";
-}
-
-function setMode(newMode) {
-  activeMode = activeMode === newMode ? null : newMode;
-  updateButtonStyles();
-
-  const canvas = document.getElementById("speedChart");
-  if (!canvas) return;
-
-  if (activeMode === "selectZone") canvas.style.cursor = "crosshair";
-  else if (activeMode === "pan") canvas.style.cursor = "grab";
-  else if (activeMode === "zoomIn" || activeMode === "zoomOut") canvas.style.cursor = "zoom-in";
-  else canvas.style.cursor = "default";
-}
-
-function performZoom(e) {
-  if (!metricChart) return;
-
-  const rect = e.target.getBoundingClientRect();
-  const currentMinX = Number(metricChart.options.scales.x.min ?? 0);
-  const currentMaxX = Number(metricChart.options.scales.x.max ?? 600);
-  const currentMinY = metricChart.options.scales.y.min;
-  const currentMaxY = metricChart.options.scales.y.max;
-
-  const clickXPercent = (e.clientX - rect.left) / rect.width;
-  const clickYPercent = (e.clientY - rect.top) / rect.height;
-  const clickedTime = currentMinX + (currentMaxX - currentMinX) * clickXPercent;
-  const clickedValue = currentMinY !== undefined && currentMaxY !== undefined
-    ? currentMaxY - (currentMaxY - currentMinY) * clickYPercent
-    : undefined;
-
-  const rangeX = currentMaxX - currentMinX;
-  const zoomFactor = activeMode === "zoomIn" ? 0.9 : 1.1;
-  const newRangeX = rangeX * zoomFactor;
-  metricChart.options.scales.x.min = clickedTime - newRangeX / 2;
-  metricChart.options.scales.x.max = clickedTime + newRangeX / 2;
-
-  if (clickedValue !== undefined && currentMinY !== undefined && currentMaxY !== undefined) {
-    const rangeY = currentMaxY - currentMinY;
-    const newRangeY = rangeY * zoomFactor;
-    metricChart.options.scales.y.min = clickedValue - newRangeY / 2;
-    metricChart.options.scales.y.max = clickedValue + newRangeY / 2;
-  }
-
-  metricChart.update("none");
-}
-
-function startPan(e) {
-  if (!metricChart) return;
-  chartMouseDown = true;
-  chartStartX = e.clientX;
-  chartStartY = e.clientY;
-  chartStartViewMinX = Number(metricChart.options.scales.x.min ?? 0);
-  chartStartViewMaxX = Number(metricChart.options.scales.x.max ?? 600);
-  chartStartViewMinY = metricChart.options.scales.y.min;
-  chartStartViewMaxY = metricChart.options.scales.y.max;
-}
-
-function continuePan(e) {
-  if (!chartMouseDown || !metricChart) return;
-
-  const rect = e.target.getBoundingClientRect();
-  const dx = e.clientX - chartStartX;
-  const dataRangeX = chartStartViewMaxX - chartStartViewMinX;
-  const dataShiftX = -(dx / rect.width) * dataRangeX;
-  metricChart.options.scales.x.min = chartStartViewMinX + dataShiftX;
-  metricChart.options.scales.x.max = chartStartViewMaxX + dataShiftX;
-
-  if (chartStartViewMinY !== undefined && chartStartViewMaxY !== undefined) {
-    const dy = e.clientY - chartStartY;
-    const dataRangeY = chartStartViewMaxY - chartStartViewMinY;
-    const dataShiftY = (dy / rect.height) * dataRangeY;
-    metricChart.options.scales.y.min = chartStartViewMinY + dataShiftY;
-    metricChart.options.scales.y.max = chartStartViewMaxY + dataShiftY;
-  }
-
-  metricChart.update("none");
-}
-
-function startSelectZone(e) {
-  chartMouseDown = true;
-  selectZoneStartX = e.clientX;
-  selectZoneStartY = e.clientY;
-}
-
-function continueSelectZone(e) {
-  if (!chartMouseDown || !overlayCtx || !overlayCanvas) return;
-
-  const canvas = document.getElementById("speedChart");
-  const rect = canvas.getBoundingClientRect();
-  const x1 = selectZoneStartX - rect.left;
-  const y1 = selectZoneStartY - rect.top;
-  const x2 = e.clientX - rect.left;
-  const y2 = e.clientY - rect.top;
-
-  overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-  overlayCtx.strokeStyle = "#f97316";
-  overlayCtx.lineWidth = 2;
-  overlayCtx.fillStyle = "rgba(249, 115, 22, 0.1)";
-  overlayCtx.fillRect(x1, y1, x2 - x1, y2 - y1);
-  overlayCtx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-}
-
-function endSelectZone(e) {
-  chartMouseDown = false;
-  if (!metricChart || !overlayCtx || !overlayCanvas) return;
-
-  const canvas = document.getElementById("speedChart");
-  const rect = canvas.getBoundingClientRect();
-  const x1 = selectZoneStartX - rect.left;
-  const x2 = e.clientX - rect.left;
-  const y1 = selectZoneStartY - rect.top;
-  const y2 = e.clientY - rect.top;
-
-  const currentMinX = Number(metricChart.options.scales.x.min ?? 0);
-  const currentMaxX = Number(metricChart.options.scales.x.max ?? 600);
-  const currentMinY = metricChart.options.scales.y.min;
-  const currentMaxY = metricChart.options.scales.y.max;
-
-  const minPixelX = Math.min(x1, x2);
-  const maxPixelX = Math.max(x1, x2);
-  const dataRangeX = currentMaxX - currentMinX;
-  metricChart.options.scales.x.min = currentMinX + dataRangeX * (minPixelX / rect.width);
-  metricChart.options.scales.x.max = currentMinX + dataRangeX * (maxPixelX / rect.width);
-
-  if (currentMinY !== undefined && currentMaxY !== undefined) {
-    const minPixelY = Math.min(y1, y2);
-    const maxPixelY = Math.max(y1, y2);
-    const dataRangeY = currentMaxY - currentMinY;
-    metricChart.options.scales.y.min = currentMaxY - dataRangeY * (maxPixelY / rect.height);
-    metricChart.options.scales.y.max = currentMaxY - dataRangeY * (minPixelY / rect.height);
-  }
-
-  metricChart.update("none");
-  overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-}
-
-function onResetViewClick() {
-  if (!metricChart) return;
-  metricChart.options.scales.x.min = 0;
-  metricChart.options.scales.x.max = 600;
-  delete metricChart.options.scales.y.min;
-  delete metricChart.options.scales.y.max;
-  activeMode = null;
-  updateButtonStyles();
-  if (overlayCtx && overlayCanvas) overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-  metricChart.update();
-}
-
-function setupChartEventListeners() {
-  const canvas = document.getElementById("speedChart");
-  if (!canvas) return;
-
-  canvas.addEventListener("click", (e) => {
-    if (activeMode === "zoomIn" || activeMode === "zoomOut") performZoom(e);
-  });
-
-  canvas.addEventListener("mousedown", (e) => {
-    if (activeMode === "pan") startPan(e);
-    else if (activeMode === "selectZone") startSelectZone(e);
-  });
-
-  canvas.addEventListener("mousemove", (e) => {
-    if (activeMode === "pan" && chartMouseDown) continuePan(e);
-    else if (activeMode === "selectZone" && chartMouseDown) continueSelectZone(e);
-  });
-
-  canvas.addEventListener("mouseup", (e) => {
-    if (chartMouseDown && activeMode === "selectZone") endSelectZone(e);
-    chartMouseDown = false;
-  });
 }
 
 async function loadBaselineForMap(mapName, forceReload = false) {
@@ -534,6 +384,11 @@ async function loadBaselineForMap(mapName, forceReload = false) {
     state.baselineHistory = currentData.baseline;
     state.currentMap = normalized;
     localStorage.setItem(LAST_MAP_KEY, normalized);
+
+    if (mapSelect) {
+      mapSelect.value = normalized;
+    }
+
     applyAllViews();
     return true;
   } catch (err) {
@@ -560,22 +415,21 @@ async function preloadBaselineAtStartup() {
     const mapsRes = await fetch("/api/baseline/maps");
     const mapsData = await mapsRes.json();
     const maps = Array.isArray(mapsData && mapsData.maps) ? mapsData.maps : [];
-    const startupMap = pickStartupMap(mapsData);
-    const orderedCandidates = [
-      startupMap,
-      ...maps.map((m) => String(m.map_name || "").toLowerCase()),
-      "basic",
-      "paris",
-    ].filter(Boolean);
 
-    const tried = new Set();
-    for (const candidate of orderedCandidates) {
-      if (tried.has(candidate)) continue;
-      tried.add(candidate);
-      // Try multiple candidates so baseline appears even if localStorage contains a stale map.
-      // eslint-disable-next-line no-await-in-loop
-      const ok = await loadBaselineForMap(candidate);
-      if (ok) break;
+    const startupMap = pickStartupMap(mapsData);
+
+    // Load baseline
+    await loadBaselineForMap(startupMap);
+
+    // Populate dropdown
+    if (mapSelect) {
+      mapSelect.innerHTML = maps
+        .map(
+          (m) =>
+            `<option value="${m.map_name}" ${m.map_name === state.currentMap ? "selected" : ""
+            }>${m.map_name.toUpperCase()}</option>`
+        )
+        .join("");
     }
   } catch (err) {
     console.error("[BASELINE] Startup preload failed:", err.message);
@@ -608,6 +462,23 @@ function bindSocket() {
     state.latestLive = snapshot;
     applyAllViews();
 
+    const currentTime = getPointTime(snapshot);
+    const rocPrCurrentTimeEl = document.getElementById("rocPrCurrentTime");
+    if (rocPrCurrentTimeEl) {
+      rocPrCurrentTimeEl.textContent = `${currentTime.toFixed(1)}s`;
+    }
+
+    const rocPrWarningEl = document.getElementById("rocPrWarning");
+    const computeRocPrBtnEl = document.getElementById("computeRocPrBtn");
+
+    if (currentTime >= 200.0) {
+      if (rocPrWarningEl) rocPrWarningEl.style.display = "none";
+      if (computeRocPrBtnEl) computeRocPrBtnEl.disabled = false;
+    } else {
+      if (rocPrWarningEl) rocPrWarningEl.style.display = "block";
+      if (computeRocPrBtnEl) computeRocPrBtnEl.disabled = true;
+    }
+
     if (snapshot.map_name) {
       const inferredMap = String(snapshot.map_name).toLowerCase().replace("_simulation", "");
       const baselineMissing = state.baselineHistory.length === 0;
@@ -626,29 +497,565 @@ function bindSocket() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   initChart();
-  setupChartEventListeners();
+
 
   document.getElementById("zoomInBtn")?.addEventListener("click", (e) => {
     e.stopPropagation();
-    setMode("zoomIn");
+    if (metricChart) metricChart.zoom(1.2);
   });
   document.getElementById("zoomOutBtn")?.addEventListener("click", (e) => {
     e.stopPropagation();
-    setMode("zoomOut");
+    if (metricChart) metricChart.zoom(0.8);
   });
-  document.getElementById("panBtn")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    setMode("pan");
+  document.getElementById("resetViewBtn")?.addEventListener("click", () => {
+    if (metricChart) {
+      metricChart.options.scales.x.min = 0;
+      metricChart.options.scales.x.max = 300;
+      metricChart.update();
+    }
   });
-  document.getElementById("selectZoneBtn")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    setMode("selectZone");
-  });
-  document.getElementById("resetViewBtn")?.addEventListener("click", onResetViewClick);
 
-  updateButtonStyles();
+  document.getElementById("saveBaselineBtn")?.addEventListener("click", async () => {
+    if (!state.currentMap) {
+      alert("No map loaded.");
+      return;
+    }
+    if (state.liveHistory.length === 0) {
+      alert("No simulation data to save.");
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/baseline/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ map_name: state.currentMap })
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Save failed.");
+      }
+
+      await loadBaselineForMap(state.currentMap, true);
+      alert(`Current simulation successfully saved as reference baseline for ${state.currentMap.toUpperCase()}!`);
+    } catch (err) {
+      console.error(err);
+      alert(`Failed to save baseline: ${err.message}`);
+    }
+  });
+
+  document.getElementById("saveRunBtn")?.addEventListener("click", async () => {
+    if (state.liveHistory.length === 0) {
+      alert("No simulation data to export.");
+      return;
+    }
+    
+    // Determine active attack type if any
+    let activeAttackType = "";
+    const lastPoint = state.liveHistory[state.liveHistory.length - 1];
+    if (lastPoint && lastPoint.active_attack_types && lastPoint.active_attack_types.length > 0) {
+      activeAttackType = lastPoint.active_attack_types.join("_");
+    }
+
+    let savedOnServer = false;
+    let serverPath = "";
+    try {
+      const res = await fetch("/api/simulation/save_run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          history: state.liveHistory,
+          map_name: state.currentMap || "custom",
+          attack_type: activeAttackType
+        })
+      });
+      const data = await res.json();
+      if (res.ok && !data.error) {
+        savedOnServer = true;
+        serverPath = data.filepath;
+      }
+    } catch (err) {
+      console.warn("Server-side save failed, falling back to local download:", err);
+    }
+
+    try {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(state.liveHistory, null, 2));
+      const downloadAnchor = document.createElement('a');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const attackLabel = activeAttackType ? activeAttackType.replace(/[^a-zA-Z0-9]/g, "_") : "normal";
+      
+      downloadAnchor.setAttribute("href", dataStr);
+      downloadAnchor.setAttribute("download", `run_${state.currentMap || "custom"}_${attackLabel}_${timestamp}.json`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+
+      if (savedOnServer) {
+        alert(`Simulation run data exported successfully!\n\n1. Saved on Server: ${serverPath}\n2. Downloaded locally to your computer.`);
+      } else {
+        alert(`Simulation run data downloaded locally to your computer!\n(Note: Server-side write failed/skipped).`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert(`Failed to export run data: ${err.message}`);
+    }
+  });
+
   applyAllViews();
 
   await preloadBaselineAtStartup();
+
+  mapSelect?.addEventListener("change", async (e) => {
+    const selectedMap = e.target.value;
+    if (selectedMap) {
+      await loadBaselineForMap(selectedMap);
+    }
+  });
+
+  const launchSimBtn = document.getElementById("launchSimBtn");
+  launchSimBtn?.addEventListener("click", async () => {
+    const selectedMap = mapSelect?.value;
+    if (!selectedMap) {
+      alert("Please select a map first!");
+      return;
+    }
+
+    const originalText = launchSimBtn.innerHTML;
+    launchSimBtn.disabled = true;
+    launchSimBtn.innerHTML = `
+      <svg style="animation: spin 1s linear infinite;" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>
+      Launching...
+    `;
+
+    try {
+      const headlessVal = !!document.getElementById("headlessCheckbox")?.checked;
+      const res = await fetch("/api/simulation/launch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ map_name: selectedMap, headless: headlessVal })
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Simulation launch failed.");
+      }
+
+      // Clear current histories to start fresh with new live data
+      state.liveHistory = [];
+      state.latestLive = null;
+
+      // Load corresponding baseline
+      await loadBaselineForMap(selectedMap, true);
+
+      alert(`Simulation successfully launched for map: ${selectedMap.toUpperCase()}`);
+    } catch (err) {
+      console.error(err);
+      alert(`Failed to launch simulation: ${err.message}`);
+    } finally {
+      launchSimBtn.disabled = false;
+      launchSimBtn.innerHTML = originalText;
+    }
+  });
+
+  document.querySelectorAll(".attack-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const attackType = btn.getAttribute("data-attack");
+      if (!attackType) return;
+
+      const originalText = btn.innerHTML;
+      btn.disabled = true;
+      btn.classList.add("loading");
+      btn.innerHTML = `
+        <svg style="animation: spin 1s linear infinite;" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>
+        Injecting...
+      `;
+
+      try {
+        const res = await fetch("/api/simulation/attack", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            type: attackType,
+            map_name: state.currentMap || "paris"
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) {
+          throw new Error(data.error || "Attack injection failed.");
+        }
+
+        alert(`Successfully injected: ${btn.textContent.trim()}`);
+      } catch (err) {
+        console.error(err);
+        alert(`Failed to inject attack: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove("loading");
+        btn.innerHTML = originalText;
+      }
+    });
+  });
+
   bindSocket();
+
+  const computeRocPrBtn = document.getElementById("computeRocPrBtn");
+  computeRocPrBtn?.addEventListener("click", () => {
+    computeAndPlotRocPr();
+  });
 });
+
+let rocChart = null;
+let prChart = null;
+
+function computeAndPlotRocPr() {
+  if (state.liveHistory.length === 0) {
+    alert("No live simulation data available.");
+    return;
+  }
+  if (!state.baselineHistory || state.baselineHistory.length === 0) {
+    alert("No reference baseline map loaded. Please wait for the baseline data to load.");
+    return;
+  }
+  
+  // 1. Get downsampled histories up to 300s
+  const baselineSampled = downsampleToSeconds(state.baselineHistory).filter(pt => getPointTime(pt) <= 300);
+  const liveSampled = downsampleToSeconds(state.liveHistory).filter(pt => getPointTime(pt) <= 300);
+  
+  if (baselineSampled.length < 150) {
+    alert(`Baseline history only has ${baselineSampled.length} seconds. We need at least 150s to perform classification.`);
+    return;
+  }
+  if (liveSampled.length < 150) {
+    alert(`Live history only has ${liveSampled.length} seconds. Please run the simulation longer.`);
+    return;
+  }
+
+  const maxElapsed = Math.min(300, Math.floor(liveSampled.length));
+  const numWindows = Math.floor(maxElapsed / 10);
+
+  const baselineFiltered = baselineSampled.filter(pt => getPointTime(pt) <= maxElapsed);
+  const liveFiltered = liveSampled.filter(pt => getPointTime(pt) <= maxElapsed);
+  
+  // 2. Extract window features dynamically
+  const X_baseline = getWindowFeaturesJS(baselineFiltered, numWindows);
+  const X_live = getWindowFeaturesJS(liveFiltered, numWindows);
+  
+  // 3. Compute mean and covariance of baseline
+  const d = 5; // 5 features
+  const n_base = X_baseline.length;
+  
+  // Mean vector
+  const mu = Array(d).fill(0);
+  for (let i = 0; i < n_base; i++) {
+    for (let j = 0; j < d; j++) {
+      mu[j] += X_baseline[i][j];
+    }
+  }
+  for (let j = 0; j < d; j++) {
+    mu[j] /= n_base;
+  }
+  
+  // Covariance matrix
+  const cov = [];
+  for (let j = 0; j < d; j++) {
+    cov[j] = Array(d).fill(0);
+  }
+  for (let j = 0; j < d; j++) {
+    for (let k = 0; k < d; k++) {
+      let sum = 0;
+      for (let i = 0; i < n_base; i++) {
+        sum += (X_baseline[i][j] - mu[j]) * (X_baseline[i][k] - mu[k]);
+      }
+      cov[j][k] = sum / (n_base - 1);
+    }
+  }
+  // Regularize diagonal
+  for (let j = 0; j < d; j++) {
+    cov[j][j] += 1e-4;
+  }
+  
+  // Invert covariance matrix
+  let covInv;
+  try {
+    covInv = invertMatrixJS(cov);
+  } catch (err) {
+    console.error("Covariance inversion failed:", err);
+    alert("Could not invert baseline covariance matrix. Regularizing further...");
+    for (let j = 0; j < d; j++) {
+      cov[j][j] += 1e-2;
+    }
+    covInv = invertMatrixJS(cov);
+  }
+  
+  // 4. Compute Mahalanobis distances for each of the 20 windows in X_live
+  const distances = [];
+  const n_live = X_live.length;
+  for (let i = 0; i < n_live; i++) {
+    const diff = [];
+    for (let j = 0; j < d; j++) {
+      diff[j] = X_live[i][j] - mu[j];
+    }
+    const temp = Array(d).fill(0);
+    for (let j = 0; j < d; j++) {
+      for (let k = 0; k < d; k++) {
+        temp[j] += diff[k] * covInv[k][j];
+      }
+    }
+    let val = 0;
+    for (let j = 0; j < d; j++) {
+      val += temp[j] * diff[j];
+    }
+    distances.push(Math.sqrt(val));
+  }
+  
+  // 5. Compute ground truth labels dynamically from live history
+  const y_true = [];
+  for (let w = 0; w < n_live; w++) {
+    const windowPoints = liveFiltered.slice(w * 10, (w + 1) * 10);
+    const hasAttack = windowPoints.some(pt => (pt.active_attack_count > 0) || (pt.active_attack_types && pt.active_attack_types.length > 0));
+    y_true.push(hasAttack ? 1 : 0);
+  }
+
+  // Update attack window label dynamically in UI
+  const attackTimes = liveFiltered.filter(pt => (pt.active_attack_count > 0) || (pt.active_attack_types && pt.active_attack_types.length > 0)).map(pt => getPointTime(pt));
+  let attackLabelText = "No Attack Detected";
+  if (attackTimes.length > 0) {
+    const minTime = Math.min(...attackTimes);
+    const maxTime = Math.max(...attackTimes);
+    attackLabelText = `t = ${minTime.toFixed(0)}s to ${maxTime.toFixed(0)}s`;
+  }
+  const attackDetectionValEl = document.getElementById("attackDetectionVal");
+  if (attackDetectionValEl) {
+    attackDetectionValEl.textContent = attackLabelText;
+  }
+  
+  // 6. Compute curves
+  const thresholds = [];
+  for (let i = 0; i <= 200; i++) {
+    thresholds.push((i / 200) * 40.0);
+  }
+  
+  const fprs = [];
+  const tprs = [];
+  const recalls = [];
+  const precisions = [];
+  
+  for (const tau of thresholds) {
+    let tp = 0, fp = 0, tn = 0, fn = 0;
+    for (let i = 0; i < distances.length; i++) {
+      const pred = distances[i] > tau ? 1 : 0;
+      const y = y_true[i];
+      if (pred === 1 && y === 1) tp++;
+      else if (pred === 1 && y === 0) fp++;
+      else if (pred === 0 && y === 0) tn++;
+      else if (pred === 0 && y === 1) fn++;
+    }
+    const tpr = (tp + fn) > 0 ? (tp / (tp + fn)) : 0.0;
+    const fpr = (fp + tn) > 0 ? (fp / (fp + tn)) : 0.0;
+    const precision = (tp + fp) > 0 ? (tp / (tp + fp)) : 1.0;
+    const recall = tpr;
+    
+    fprs.push(fpr);
+    tprs.push(tpr);
+    recalls.push(recall);
+    precisions.push(precision);
+  }
+  
+  // Calculate AUCs
+  const aucRoc = computeAucJS(fprs, tprs);
+  const aucPr = Math.min(computeAucJS(recalls, precisions), 1.0);
+  
+  document.getElementById("rocAucVal").textContent = aucRoc.toFixed(3);
+  document.getElementById("prAucVal").textContent = aucPr.toFixed(3);
+  
+  // 7. Render Charts
+  renderRocPrCharts(fprs, tprs, recalls, precisions);
+  
+  // Show container
+  document.getElementById("rocPrContainer").style.display = "flex";
+}
+
+function getWindowFeaturesJS(sampled, numWindows) {
+  const features = [];
+  for (let w = 0; w < numWindows; w++) {
+    const windowPoints = sampled.slice(w * 10, (w + 1) * 10);
+    let sumStopped = 0, sumSpeed = 0, sumEB = 0, sumFuel = 0, sumCol = 0;
+    for (const pt of windowPoints) {
+      sumStopped += pt.stopped_ratio || 0;
+      sumSpeed += pt.avg_speed || 0;
+      const m = pt.metrics || {};
+      sumEB += m.emergency_breaking || 0;
+      sumFuel += m.fuel_consumption || 0;
+      sumCol += m.collision || 0;
+    }
+    const n = windowPoints.length || 1;
+    features.push([
+      sumStopped / n,
+      sumSpeed / n,
+      sumEB / n,
+      sumFuel / n,
+      sumCol / n
+    ]);
+  }
+  return features;
+}
+
+function invertMatrixJS(M) {
+  const n = M.length;
+  const I = [];
+  for (let i = 0; i < n; i++) {
+    I[i] = [];
+    for (let j = 0; j < n; j++) {
+      I[i][j] = (i === j) ? 1.0 : 0.0;
+    }
+  }
+  const A = [];
+  for (let i = 0; i < n; i++) {
+    A[i] = [...M[i]];
+  }
+  for (let i = 0; i < n; i++) {
+    let pivotRow = i;
+    for (let r = i + 1; r < n; r++) {
+      if (Math.abs(A[r][i]) > Math.abs(A[pivotRow][i])) {
+        pivotRow = r;
+      }
+    }
+    if (pivotRow !== i) {
+      let temp = A[i]; A[i] = A[pivotRow]; A[pivotRow] = temp;
+      temp = I[i]; I[i] = I[pivotRow]; I[pivotRow] = temp;
+    }
+    const pivot = A[i][i];
+    if (Math.abs(pivot) < 1e-12) {
+      throw new Error("Matrix is singular");
+    }
+    for (let j = 0; j < n; j++) {
+      A[i][j] /= pivot;
+      I[i][j] /= pivot;
+    }
+    for (let r = 0; r < n; r++) {
+      if (r === i) continue;
+      const factor = A[r][i];
+      for (let j = 0; j < n; j++) {
+        A[r][j] -= factor * A[i][j];
+        I[r][j] -= factor * I[i][j];
+      }
+    }
+  }
+  return I;
+}
+
+function computeAucJS(x, y) {
+  const points = x.map((xv, idx) => ({ x: xv, y: y[idx] }));
+  points.sort((a, b) => a.x - b.x);
+  
+  let auc = 0.0;
+  for (let i = 0; i < points.length - 1; i++) {
+    const dx = points[i+1].x - points[i].x;
+    const meanY = (points[i+1].y + points[i].y) / 2.0;
+    auc += dx * meanY;
+  }
+  return auc;
+}
+
+function renderRocPrCharts(fprs, tprs, recalls, precisions) {
+  const rocPoints = fprs.map((f, i) => ({ x: f, y: tprs[i] }));
+  rocPoints.sort((a, b) => {
+    if (Math.abs(a.x - b.x) < 1e-9) return a.y - b.y;
+    return a.x - b.x;
+  });
+  
+  const prPoints = recalls.map((r, i) => ({ x: r, y: precisions[i] }));
+  prPoints.sort((a, b) => {
+    if (Math.abs(a.x - b.x) < 1e-9) return a.y - b.y;
+    return a.x - b.x;
+  });
+
+  if (rocChart) rocChart.destroy();
+  if (prChart) prChart.destroy();
+
+  const ctxRoc = document.getElementById("rocChart").getContext("2d");
+  rocChart = new Chart(ctxRoc, {
+    type: "line",
+    data: {
+      datasets: [
+        {
+          label: "ROC Curve",
+          data: rocPoints,
+          borderColor: "#e11d48",
+          borderWidth: 2.5,
+          fill: false,
+          tension: 0.1,
+          pointRadius: 1.5,
+        },
+        {
+          label: "Random Guess",
+          data: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+          borderColor: "#94a3b8",
+          borderWidth: 1.5,
+          borderDash: [5, 5],
+          fill: false,
+          pointRadius: 0,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          type: "linear",
+          title: { display: true, text: "False Positive Rate (FPR)", font: { family: "Outfit", size: 10, weight: "bold" } },
+          min: 0,
+          max: 1,
+        },
+        y: {
+          type: "linear",
+          title: { display: true, text: "True Positive Rate (TPR)", font: { family: "Outfit", size: 10, weight: "bold" } },
+          min: 0,
+          max: 1,
+        }
+      },
+      plugins: {
+        legend: { display: false }
+      }
+    }
+  });
+
+  const ctxPr = document.getElementById("prChart").getContext("2d");
+  prChart = new Chart(ctxPr, {
+    type: "line",
+    data: {
+      datasets: [
+        {
+          label: "PR Curve",
+          data: prPoints,
+          borderColor: "#0284c7",
+          borderWidth: 2.5,
+          fill: false,
+          tension: 0.1,
+          pointRadius: 1.5,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          type: "linear",
+          title: { display: true, text: "Recall", font: { family: "Outfit", size: 10, weight: "bold" } },
+          min: 0,
+          max: 1,
+        },
+        y: {
+          type: "linear",
+          title: { display: true, text: "Precision", font: { family: "Outfit", size: 10, weight: "bold" } },
+          min: 0,
+          max: 1,
+        }
+      },
+      plugins: {
+        legend: { display: false }
+      }
+    }
+  });
+}

@@ -207,6 +207,95 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
+app.post("/api/simulation/launch", async (req, res) => {
+  try {
+    const map_name = String(req.body && req.body.map_name ? req.body.map_name : "paris").toLowerCase().trim();
+    let mcpToolName = "launch_Paris";
+    if (map_name === "basic") {
+      mcpToolName = "launch_basic_simulation";
+    } else if (map_name === "berlin") {
+      mcpToolName = "launch_Berlin";
+    } else if (map_name === "luxembourg") {
+      mcpToolName = "launch_Luxembourg";
+    } else if (map_name === "paris") {
+      mcpToolName = "launch_Paris";
+    }
+
+    // Stop current running simulation if any to avoid port conflicts
+    try {
+      await mcpToolCall("stop_simulation", {});
+    } catch (stopErr) {
+      console.log("[dashboard] stop_simulation failed/was not active:", stopErr.message);
+    }
+
+    const headless = !!(req.body && req.body.headless);
+    const launchData = await mcpToolCall(mcpToolName, { headless });
+    const startData = await mcpToolCall("start_simulation", {});
+
+    res.json({
+      ok: true,
+      launch: launchData,
+      start: startData,
+      message: `Launched simulation on map '${map_name}' successfully (headless: ${headless}).`
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/simulation/attack", async (req, res) => {
+  try {
+    const attackType = String(req.body && req.body.type ? req.body.type : "").trim().toLowerCase();
+    const mapName = String(req.body && req.body.map_name ? req.body.map_name : "paris").trim().toLowerCase();
+    let mcpToolName = "";
+    
+    // Increased duration (100s) to give the classifier more windows of observation
+    let params = { duration: 100 }; 
+
+    // Scale up the attack severity based on map size
+    let scaleMultiplier = 1;
+    if (mapName === "paris") {
+      scaleMultiplier = 8;  // Spawns 40 Sybils, 16 obstacles, etc.
+    } else if (mapName === "luxembourg") {
+      scaleMultiplier = 4;  // Spawns 20 Sybils, 8 obstacles, etc.
+    }
+
+    switch (attackType) {
+      case "sybil":
+        mcpToolName = "sybil_attack";
+        params.count = 5 * scaleMultiplier;
+        break;
+      case "traffic_light":
+        mcpToolName = "traffic_light_tampering_attack";
+        break;
+      case "universal_perturbation":
+        mcpToolName = "universal_perturbation_attack";
+        params.epsilon = 0.5; // Stronger deceleration (50% reduction)
+        break;
+      case "sensor_spoofing":
+        mcpToolName = "targeted_adversarial_sensor_spoofing";
+        params.num_obstacles = 2 * scaleMultiplier;
+        break;
+      case "fake_safety":
+        mcpToolName = "fake_safety_message_attack";
+        params.count = 2 * scaleMultiplier;
+        break;
+      case "fake_emergency":
+        mcpToolName = "fake_emergency_vehicle_broadcast";
+        params.speed = 22.0;
+        params.count = 2 * scaleMultiplier;
+        break;
+      default:
+        return res.status(400).json({ error: `Unknown attack type: ${attackType}` });
+    }
+
+    const data = await mcpToolCall(mcpToolName, { params });
+    res.json({ ok: true, data });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post("/api/benchmark/:label", async (req, res) => {
   try {
     const label = String(req.params.label || "baseline");
@@ -319,6 +408,38 @@ app.get("/api/baseline/current", async (req, res) => {
       baseline,
     };
     res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/simulation/save_run", (req, res) => {
+  try {
+    const { history, map_name, attack_type } = req.body;
+    if (!Array.isArray(history) || !history.length) {
+      return res.status(400).json({ error: "Empty or invalid history data." });
+    }
+    
+    // Create folder runs/ if it doesn't exist
+    const RUNS_DIR = path.join(__dirname, "..", "runs");
+    if (!fs.existsSync(RUNS_DIR)) {
+      fs.mkdirSync(RUNS_DIR, { recursive: true });
+    }
+    
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const attackLabel = attack_type ? String(attack_type).replace(/[^a-zA-Z0-9]/g, "_") : "normal";
+    const filename = `run_${map_name || "custom"}_${attackLabel}_${timestamp}.json`;
+    const filepath = path.join(RUNS_DIR, filename);
+    
+    fs.writeFileSync(filepath, JSON.stringify(history, null, 2), "utf8");
+    console.log(`[dashboard] Saved simulation run to: ${filepath}`);
+    
+    res.json({
+      status: "saved",
+      filename,
+      filepath,
+      count: history.length
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

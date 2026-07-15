@@ -21,7 +21,7 @@ TwinSentinel is a comprehensive pairs-simulation environment designed to evaluat
 The workspace is structured to keep data, source code, and post-processing separate and clean:
 
 ```bash
-/home/mehdi/VANET_Project/Docker_files/
+/home/mehdi/VANET_Project/TwinSentinel_Project/
 ├── MCP_server.py             # Model Context Protocol (MCP) Python orchestration server
 ├── baselines/                # Stored benign baseline JSON runs (Seeds 1–20) for Paris, Berlin, & Luxembourg
 ├── runs/                     # Directory where active and historical simulation logs are exported
@@ -30,9 +30,6 @@ The workspace is structured to keep data, source code, and post-processing separ
 ├── post_treatment/           # Post-processing files, split into:
 │   ├── figure/               # ROC curves, detectability frontiers, and figure generators
 │   └── table/                # Campaign metrics JSONs, Table V calculations, and statistical scripts
-├── report/                   # Scientific analysis reports:
-│   ├── scripts/              # Report generation scripts (Docx compilers, MD parsers)
-│   └── *.docx, *.pdf, *.md   # Final formatted Word documents and report files
 ├── scripts/                  # Base simulation execution and helper scripts
 ├── scratch/                  # Temporary development scratchpad and tests
 └── .venv/                    # Python virtual environment containing simulation dependencies
@@ -101,14 +98,39 @@ python post_treatment/figure/generate_lux_figure9_and_table.py
 python post_treatment/figure/generate_figure9_and_table.py       # Paris
 ```
 
-### 3. Generate Scientific Word Reports
-Compiles the post-processing metrics and figures directly into the official `.docx` report documents:
+---
+
+## 🤝 Git LFS & Collaboration
+
+This repository uses **Git LFS (Large File Storage)** to manage large SUMO network topologies (`*.net.xml`, `*.rou.gz`) and simulation run logs (`runs/*.json`, `baselines/*.json`).
+
+### 1. Prerequisites for Collaborators
+To work on this project and fetch all assets correctly, you must have Git LFS installed on your system.
+
+**On Ubuntu / Debian:**
 ```bash
-python report/scripts/generate_berlin_docx_report.py
-python report/scripts/generate_lux_docx_report.py
-python report/scripts/generate_docx_report.py            # Paris
+sudo apt update && sudo apt install git-lfs
 ```
-The final reports are compiled and placed directly inside the `report/` directory.
+
+### 2. Cloning the Repository
+When cloning this repository, initialize Git LFS and pull the large objects:
+```bash
+# Clone the repository
+git clone https://github.com/E-Mehdi-Boulharts/TwinSentinel_Project.git
+cd TwinSentinel_Project
+
+# Initialize Git LFS and download the tracked assets (baselines, maps, runs)
+git lfs install
+git lfs pull
+```
+
+### 3. Adding New Large Files
+If you add new simulation runs, baselines, or maps, Git LFS is configured to track them automatically via `.gitattributes`. Simply add, commit, and push as usual:
+```bash
+git add runs/new_run.json
+git commit -m "Add new simulation run data"
+git push origin main
+```
 
 ---
 

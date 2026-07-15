@@ -4,9 +4,10 @@ const path = require("path");
 const fs = require("fs");
 const axios = require("axios");
 const { Server } = require("socket.io");
+const { exec } = require("child_process");
 
 const PORT = Number(process.env.PORT || 3100);
-const MCP_URL = process.env.MCP_URL || "http://127.0.0.1:8000/mcp/";
+const MCP_URL = process.env.MCP_URL || "http://127.0.0.1:8000/mcp";
 const POLL_MS = Number(process.env.POLL_MS || 1000);
 const BASELINE_DIR = path.join(__dirname, "..", "baselines");
 
@@ -28,23 +29,93 @@ function resetSession() {
 function normalizeMapName(mapName = "paris") {
   const key = String(mapName || "paris").trim().toLowerCase();
   if (key === "basic_simulation") return "basic";
+  
+  const seedMatch = key.match(/seed_?(\d+)/i);
+  if (seedMatch) {
+    const seedPart = `_seed_${seedMatch[1]}`;
+    if (key.includes("luxembourg") || key.includes("lux")) {
+      return "lux" + seedPart;
+    }
+    if (key.includes("paris")) {
+      return "paris" + seedPart;
+    }
+    if (key.includes("berlin")) {
+      return "berlin" + seedPart;
+    }
+  }
+  
+  if (key.includes("luxembourg") || key.includes("lux")) return "lux";
   return key;
 }
 
-function baselineFilePath(mapName) {
-  return path.join(BASELINE_DIR, `baseline_${normalizeMapName(mapName)}.json`);
+function baselineFilePath(mapName, seed = 42) {
+  const normMap = normalizeMapName(mapName);
+  
+  let baseMap = "paris";
+  if (normMap.includes("paris")) baseMap = "paris";
+  else if (normMap.includes("berlin")) baseMap = "berlin";
+  else if (normMap.includes("lux")) baseMap = "lux";
+  else if (normMap.includes("basic")) baseMap = "basic";
+  else baseMap = normMap;
+  
+  let finalSeed = seed;
+  const seedMatch = normMap.match(/seed_?(\d+)/i);
+  if (seedMatch) {
+    finalSeed = parseInt(seedMatch[1], 10);
+  }
+  
+  if (baseMap === "paris") {
+    const defaultParis = path.join(BASELINE_DIR, "baseline_paris.json");
+    if (finalSeed === 42 && fs.existsSync(defaultParis)) {
+      return defaultParis;
+    }
+    return path.join(BASELINE_DIR, `baseline_paris_seed_${finalSeed}.json`);
+  }
+  
+  if (baseMap === "berlin") {
+    const defaultBerlin = path.join(BASELINE_DIR, "baseline_berlin.json");
+    if (finalSeed === 42 && fs.existsSync(defaultBerlin)) {
+      return defaultBerlin;
+    }
+    return path.join(BASELINE_DIR, `baseline_berlin_seed_${finalSeed}.json`);
+  }
+  
+  if (baseMap === "lux") {
+    const defaultLux = path.join(BASELINE_DIR, "baseline_luxembourg.json");
+    if (finalSeed === 42 && fs.existsSync(defaultLux)) {
+      return defaultLux;
+    }
+    return path.join(BASELINE_DIR, `baseline_lux_seed_${finalSeed}.json`);
+  }
+  
+  return path.join(BASELINE_DIR, `baseline_${baseMap}.json`);
 }
 
-function loadBaselineFromDisk(mapName, forceReload = false) {
+function loadBaselineFromDisk(mapName, seed = 42, forceReload = false) {
   const normalized = normalizeMapName(mapName);
-  if (!forceReload && baselineCache.has(normalized)) {
-    return baselineCache.get(normalized);
+  
+  let baseMap = "paris";
+  if (normalized.includes("paris")) baseMap = "paris";
+  else if (normalized.includes("berlin")) baseMap = "berlin";
+  else if (normalized.includes("lux")) baseMap = "lux";
+  else if (normalized.includes("basic")) baseMap = "basic";
+  else baseMap = normalized;
+  
+  let finalSeed = seed;
+  const seedMatch = normalized.match(/seed_?(\d+)/i);
+  if (seedMatch) {
+    finalSeed = parseInt(seedMatch[1], 10);
   }
-  const filePath = baselineFilePath(normalized);
+  
+  const cacheKey = `${baseMap}_seed_${finalSeed}`;
+  if (!forceReload && baselineCache.has(cacheKey)) {
+    return baselineCache.get(cacheKey);
+  }
+  const filePath = baselineFilePath(normalized, seed);
   if (!fs.existsSync(filePath)) return null;
   const raw = fs.readFileSync(filePath, "utf8");
   const parsed = JSON.parse(raw);
-  baselineCache.set(normalized, parsed);
+  baselineCache.set(cacheKey, parsed);
   return parsed;
 }
 
@@ -56,7 +127,7 @@ function preloadBaselines() {
   for (const file of fs.readdirSync(BASELINE_DIR)) {
     if (!file.startsWith("baseline_") || !file.endsWith(".json")) continue;
     const mapName = file.replace("baseline_", "").replace(/\.json$/i, "");
-    const data = loadBaselineFromDisk(mapName, true);
+    const data = loadBaselineFromDisk(mapName, 42, true);
     if (Array.isArray(data)) {
       loaded.push({ map_name: mapName, count: data.length });
     }
@@ -125,7 +196,7 @@ async function ensureSession() {
 
   const initRes = await axios.post(MCP_URL, initPayload, {
     headers: mcpHeaders(),
-    timeout: 10000,
+    timeout: 30000,
     maxRedirects: 5,
     validateStatus: () => true,
   });
@@ -148,7 +219,7 @@ async function ensureSession() {
     },
     {
       headers: mcpHeaders(),
-      timeout: 10000,
+      timeout: 30000,
       maxRedirects: 5,
       validateStatus: () => true,
     }
@@ -169,7 +240,7 @@ async function mcpToolCall(name, argumentsObj = {}) {
 
     return axios.post(MCP_URL, payload, {
       headers: mcpHeaders(),
-      timeout: 15000,
+      timeout: 180000,
       maxRedirects: 5,
       validateStatus: () => true,
     });
@@ -179,7 +250,7 @@ async function mcpToolCall(name, argumentsObj = {}) {
     await ensureSession();
     let response = await postToolCall();
 
-    if (response.status === 400 || response.status === 401 || response.status === 403 || response.status === 409) {
+    if (response.status === 400 || response.status === 401 || response.status === 403 || response.status === 404 || response.status === 409) {
       resetSession();
       await ensureSession();
       response = await postToolCall();
@@ -191,7 +262,7 @@ async function mcpToolCall(name, argumentsObj = {}) {
 
     return extractToolPayload(parseMcpBody(response));
   } catch (error) {
-    if (error && error.response && (error.response.status === 400 || error.response.status === 401 || error.response.status === 403 || error.response.status === 409)) {
+    if (error && error.response && (error.response.status === 400 || error.response.status === 401 || error.response.status === 403 || error.response.status === 404 || error.response.status === 409)) {
       resetSession();
     }
     throw error;
@@ -209,7 +280,33 @@ app.get("/api/health", async (req, res) => {
 
 app.post("/api/simulation/launch", async (req, res) => {
   try {
-    const map_name = String(req.body && req.body.map_name ? req.body.map_name : "paris").toLowerCase().trim();
+    const selectedBaseline = String(req.body && req.body.map_name ? req.body.map_name : "paris").toLowerCase().trim();
+    
+    // Parse map and seed from baseline name
+    let map_name = "paris";
+    let seed = 42;
+    
+    if (selectedBaseline.includes("paris")) {
+      map_name = "paris";
+    } else if (selectedBaseline.includes("berlin")) {
+      map_name = "berlin";
+    } else if (selectedBaseline.includes("luxembourg") || selectedBaseline.includes("lux")) {
+      map_name = "luxembourg";
+    } else if (selectedBaseline.includes("basic")) {
+      map_name = "basic";
+    } else {
+      map_name = "paris";
+    }
+    
+    const seedMatch = selectedBaseline.match(/seed_?(\d+)/i);
+    if (seedMatch) {
+      seed = parseInt(seedMatch[1], 10);
+    } else if (selectedBaseline === "paris1") {
+      seed = 1;
+    } else if (req.body && req.body.seed) {
+      seed = parseInt(req.body.seed, 10) || 42;
+    }
+
     let mcpToolName = "launch_Paris";
     if (map_name === "basic") {
       mcpToolName = "launch_basic_simulation";
@@ -221,24 +318,34 @@ app.post("/api/simulation/launch", async (req, res) => {
       mcpToolName = "launch_Paris";
     }
 
+    console.log(`[dashboard] Received launch request. selectedBaseline='${selectedBaseline}', resolved map_name='${map_name}', seed=${seed}`);
+
     // Stop current running simulation if any to avoid port conflicts
     try {
+      console.log(`[dashboard] Attempting to stop any running simulation first...`);
       await mcpToolCall("stop_simulation", {});
     } catch (stopErr) {
       console.log("[dashboard] stop_simulation failed/was not active:", stopErr.message);
     }
 
     const headless = !!(req.body && req.body.headless);
-    const launchData = await mcpToolCall(mcpToolName, { headless });
-    const startData = await mcpToolCall("start_simulation", {});
+    console.log(`[dashboard] Calling MCP tool '${mcpToolName}' with headless=${headless}, seed=${seed}...`);
+    const launchData = await mcpToolCall(mcpToolName, { headless, seed });
+    console.log(`[dashboard] MCP tool '${mcpToolName}' result:`, JSON.stringify(launchData));
 
+    console.log(`[dashboard] Calling MCP tool 'start_simulation'...`);
+    const startData = await mcpToolCall("start_simulation", {});
+    console.log(`[dashboard] MCP 'start_simulation' result:`, JSON.stringify(startData));
+
+    console.log(`[dashboard] Launch simulation sequence completed successfully.`);
     res.json({
       ok: true,
       launch: launchData,
       start: startData,
-      message: `Launched simulation on map '${map_name}' successfully (headless: ${headless}).`
+      message: `Launched simulation on map '${map_name}' successfully (headless: ${headless}, seed: ${seed}).`
     });
   } catch (error) {
+    console.error(`[dashboard] Error launching simulation:`, error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -340,11 +447,12 @@ app.get("/api/metric-documentation", async (req, res) => {
 app.post("/api/baseline/load", async (req, res) => {
   try {
     const map_name = normalizeMapName(req.body && req.body.map_name ? req.body.map_name : "paris");
+    const seed = Number(req.body && req.body.seed ? req.body.seed : 42);
     const forceReload = Boolean(req.body && req.body.force_reload);
-    let baseline = loadBaselineFromDisk(map_name, forceReload);
+    let baseline = loadBaselineFromDisk(map_name, seed, forceReload);
 
     if (!baseline) {
-      const saveResult = await mcpToolCall("baseline_reference_load", { params: { map_name } });
+      const saveResult = await mcpToolCall("baseline_reference_load", { params: { map_name, seed } });
       if (saveResult && saveResult.error) {
         return res.status(404).json({
           error: saveResult.error,
@@ -354,13 +462,14 @@ app.post("/api/baseline/load", async (req, res) => {
       const currentFromMcp = await mcpToolCall("baseline_get_current", { params: {} });
       if (currentFromMcp && currentFromMcp.status === "loaded" && Array.isArray(currentFromMcp.baseline)) {
         baseline = currentFromMcp.baseline;
-        baselineCache.set(map_name, baseline);
+        const cacheKey = map_name === "paris" ? `paris_seed_${seed}` : map_name;
+        baselineCache.set(cacheKey, baseline);
       }
     }
 
     if (!baseline) {
       return res.status(404).json({
-        error: `Baseline not available for map '${map_name}'`,
+        error: `Baseline not available for map '${map_name}' (seed: ${seed})`,
       });
     }
 
@@ -394,7 +503,8 @@ app.post("/api/baseline/save", async (req, res) => {
 app.get("/api/baseline/current", async (req, res) => {
   try {
     const map_name = normalizeMapName(req.query.map_name || "paris");
-    const baseline = loadBaselineFromDisk(map_name);
+    const seed = Number(req.query.seed || 42);
+    const baseline = loadBaselineFromDisk(map_name, seed);
     if (!baseline) {
       return res.status(404).json({
         status: "no_baseline",
@@ -412,6 +522,7 @@ app.get("/api/baseline/current", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 
 app.post("/api/simulation/save_run", (req, res) => {
   try {

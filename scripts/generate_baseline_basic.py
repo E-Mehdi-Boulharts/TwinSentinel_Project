@@ -10,7 +10,7 @@ import sys
 # Config
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_MAP_NAME = os.getenv('BASELINE_MAP_NAME', 'basic').strip() or 'basic'
-DEFAULT_MAP_CFG = os.getenv('SUMO_MAP_CFG', os.getenv('SUMO_MAP_BASIC', os.path.join(ROOT, 'basic_simulation', 'osm.sumocfg')))
+DEFAULT_MAP_CFG = os.getenv('SUMO_MAP_CFG', os.getenv('SUMO_MAP_BASIC', os.path.join(ROOT, 'maps', 'basic_simulation', 'osm.sumocfg')))
 DEFAULT_SUMO_BIN = os.getenv('SUMO_BINARY', 'sumo-gui')
 DEFAULT_STEP = float(os.getenv('BASELINE_STEP', '0.05'))
 DEFAULT_TARGET_TIME = float(os.getenv('BASELINE_TARGET', '600.0'))

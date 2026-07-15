@@ -31,8 +31,19 @@ const state = {
   attackedHistory: loadStoredHistory(HISTORY_ATTACKED_KEY),
   selectedMetric: localStorage.getItem(SELECTED_METRIC_KEY) || "fuel_consumption",
   latestLive: null,
-  currentMap: localStorage.getItem(LAST_MAP_KEY) || null,
+  currentMap: localStorage.getItem(LAST_MAP_KEY) || "paris",
+  currentBaseline: null,
+  allBaselines: [],
 };
+
+function getBaseMapName(mapName) {
+  const norm = String(mapName || "").toLowerCase().replace("_simulation", "");
+  if (norm.startsWith("paris")) return "paris";
+  if (norm.startsWith("berlin")) return "berlin";
+  if (norm.startsWith("luxembourg")) return "luxembourg";
+  if (norm === "basic") return "basic";
+  return norm;
+}
 
 let metricChart = null;
 
@@ -364,29 +375,54 @@ function applyAllViews() {
   renderComparisonTable();
 }
 
-async function loadBaselineForMap(mapName, forceReload = false) {
-  const normalized = String(mapName || "paris").toLowerCase().replace("_simulation", "");
+function getMapFolder(baselineName) {
+  const norm = String(baselineName || "paris").toLowerCase();
+  if (norm.includes("paris")) return "paris";
+  if (norm.includes("berlin")) return "berlin";
+  if (norm.includes("lux")) return "luxembourg";
+  if (norm.includes("basic")) return "basic_simulation";
+  return "paris";
+}
+
+function getBaselineSeed(baselineName) {
+  const norm = String(baselineName || "").toLowerCase();
+  const match = norm.match(/seed_?(\d+)/i);
+  if (match) return parseInt(match[1], 10);
+  if (norm.endsWith("1")) return 1;
+  return 42;
+}
+
+async function loadBaselineForMap(baselineName, forceReload = false) {
+  const normalized = String(baselineName || "paris").toLowerCase().replace("_simulation", "");
+  const seedVal = getBaselineSeed(normalized);
+  const mapFolder = getMapFolder(normalized);
+
   try {
     const loadRes = await fetch("/api/baseline/load", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ map_name: normalized, force_reload: !!forceReload }),
+      body: JSON.stringify({ map_name: normalized, force_reload: !!forceReload, seed: seedVal }),
     });
     const loadData = await loadRes.json();
     if (!loadRes.ok || loadData.error) throw new Error(loadData.error || `HTTP ${loadRes.status}`);
 
-    const currentRes = await fetch(`/api/baseline/current?map_name=${encodeURIComponent(normalized)}`);
+    const currentRes = await fetch(`/api/baseline/current?map_name=${encodeURIComponent(normalized)}&seed=${seedVal}`);
     const currentData = await currentRes.json();
     if (!currentRes.ok || currentData.status !== "loaded" || !Array.isArray(currentData.baseline)) {
       throw new Error(currentData.message || currentData.error || "Baseline unavailable");
     }
 
     state.baselineHistory = currentData.baseline;
-    state.currentMap = normalized;
-    localStorage.setItem(LAST_MAP_KEY, normalized);
+    state.currentBaseline = baselineName;
+    state.currentMap = mapFolder;
+    localStorage.setItem(LAST_MAP_KEY, mapFolder);
 
     if (mapSelect) {
-      mapSelect.value = normalized;
+      mapSelect.value = mapFolder;
+    }
+    const baselineSelect = document.getElementById("baselineSelect");
+    if (baselineSelect) {
+      baselineSelect.value = baselineName;
     }
 
     applyAllViews();
@@ -397,40 +433,69 @@ async function loadBaselineForMap(mapName, forceReload = false) {
   }
 }
 
-function pickStartupMap(mapsResponse) {
-  const queryMap = new URLSearchParams(window.location.search).get("map");
-  if (queryMap) return queryMap;
-  if (state.currentMap) return state.currentMap;
+function populateBaselinesDropdown() {
+  const baselineSelect = document.getElementById("baselineSelect");
+  if (!baselineSelect) return;
 
-  const maps = Array.isArray(mapsResponse && mapsResponse.maps) ? mapsResponse.maps : [];
-  const available = maps.map((m) => String(m.map_name || "").toLowerCase());
-  if (available.includes("paris2.0")) return "paris2.0";
-  if (available.includes("paris")) return "paris";
-  if (available.includes("basic")) return "basic";
-  return available[0] || "paris";
+  const selectedMap = mapSelect ? mapSelect.value : "paris";
+  const baseMapName = getBaseMapName(selectedMap);
+
+  const filtered = state.allBaselines.filter((b) => {
+    const normB = String(b.map_name).toLowerCase();
+    if (baseMapName === "paris") return normB.includes("paris");
+    if (baseMapName === "berlin") return normB.includes("berlin");
+    if (baseMapName === "luxembourg" || baseMapName === "lux") return normB.includes("lux");
+    if (baseMapName === "basic") return normB.includes("basic");
+    return normB.includes(baseMapName);
+  });
+
+  filtered.sort((a, b) => {
+    const nameA = String(a.map_name).toLowerCase();
+    const nameB = String(b.map_name).toLowerCase();
+    const isSeedA = nameA.includes("seed");
+    const isSeedB = nameB.includes("seed");
+    if (!isSeedA && isSeedB) return -1;
+    if (isSeedA && !isSeedB) return 1;
+    if (isSeedA && isSeedB) {
+      const numA = parseInt(nameA.match(/\d+/)?.[0] || 0, 10);
+      const numB = parseInt(nameB.match(/\d+/)?.[0] || 0, 10);
+      return numA - numB;
+    }
+    return nameA.localeCompare(nameB);
+  });
+
+  baselineSelect.innerHTML = filtered
+    .map((b) => {
+      let displayName = b.map_name.toUpperCase();
+      displayName = displayName.replace("BASELINE_", "").replace("_SEED_", " Seed ");
+      if (displayName === "PARIS") displayName = "PARIS DEFAULT (Seed 42)";
+      if (displayName === "BERLIN") displayName = "BERLIN DEFAULT (Seed 42)";
+      if (displayName === "LUXEMBOURG") displayName = "LUXEMBOURG DEFAULT (Seed 42)";
+      if (displayName === "BASIC") displayName = "BASIC DEFAULT (Seed 42)";
+      return `<option value="${b.map_name}">${displayName}</option>`;
+    })
+    .join("");
+
+  if (filtered.length === 0) {
+    baselineSelect.innerHTML = `<option value="${baseMapName}">${baseMapName.toUpperCase()} DEFAULT (Seed 42)</option>`;
+  }
 }
 
 async function preloadBaselineAtStartup() {
   try {
     const mapsRes = await fetch("/api/baseline/maps");
     const mapsData = await mapsRes.json();
-    const maps = Array.isArray(mapsData && mapsData.maps) ? mapsData.maps : [];
+    state.allBaselines = Array.isArray(mapsData && mapsData.maps) ? mapsData.maps : [];
 
-    const startupMap = pickStartupMap(mapsData);
-
-    // Load baseline
-    await loadBaselineForMap(startupMap);
-
-    // Populate dropdown
     if (mapSelect) {
-      mapSelect.innerHTML = maps
-        .map(
-          (m) =>
-            `<option value="${m.map_name}" ${m.map_name === state.currentMap ? "selected" : ""
-            }>${m.map_name.toUpperCase()}</option>`
-        )
-        .join("");
+      mapSelect.value = state.currentMap || "paris";
     }
+
+    populateBaselinesDropdown();
+
+    const baselineSelect = document.getElementById("baselineSelect");
+    const startupBaseline = baselineSelect && baselineSelect.value ? baselineSelect.value : (state.currentMap || "paris");
+    await loadBaselineForMap(startupBaseline);
   } catch (err) {
     console.error("[BASELINE] Startup preload failed:", err.message);
   }
@@ -463,26 +528,13 @@ function bindSocket() {
     applyAllViews();
 
     const currentTime = getPointTime(snapshot);
-    const rocPrCurrentTimeEl = document.getElementById("rocPrCurrentTime");
-    if (rocPrCurrentTimeEl) {
-      rocPrCurrentTimeEl.textContent = `${currentTime.toFixed(1)}s`;
-    }
-
-    const rocPrWarningEl = document.getElementById("rocPrWarning");
-    const computeRocPrBtnEl = document.getElementById("computeRocPrBtn");
-
-    if (currentTime >= 200.0) {
-      if (rocPrWarningEl) rocPrWarningEl.style.display = "none";
-      if (computeRocPrBtnEl) computeRocPrBtnEl.disabled = false;
-    } else {
-      if (rocPrWarningEl) rocPrWarningEl.style.display = "block";
-      if (computeRocPrBtnEl) computeRocPrBtnEl.disabled = true;
-    }
 
     if (snapshot.map_name) {
       const inferredMap = String(snapshot.map_name).toLowerCase().replace("_simulation", "");
       const baselineMissing = state.baselineHistory.length === 0;
-      const mapChanged = !state.currentMap || state.currentMap !== inferredMap;
+      const currentBase = getBaseMapName(state.currentMap);
+      const inferredBase = getBaseMapName(inferredMap);
+      const mapChanged = !state.currentMap || currentBase !== inferredBase;
       if (baselineMissing || mapChanged) {
         await loadBaselineForMap(inferredMap);
       }
@@ -608,7 +660,21 @@ document.addEventListener("DOMContentLoaded", async () => {
   mapSelect?.addEventListener("change", async (e) => {
     const selectedMap = e.target.value;
     if (selectedMap) {
-      await loadBaselineForMap(selectedMap);
+      state.currentMap = selectedMap;
+      localStorage.setItem(LAST_MAP_KEY, selectedMap);
+      populateBaselinesDropdown();
+
+      const baselineSelect = document.getElementById("baselineSelect");
+      if (baselineSelect && baselineSelect.value) {
+        await loadBaselineForMap(baselineSelect.value);
+      }
+    }
+  });
+
+  document.getElementById("baselineSelect")?.addEventListener("change", async (e) => {
+    const selectedBaseline = e.target.value;
+    if (selectedBaseline) {
+      await loadBaselineForMap(selectedBaseline);
     }
   });
 
@@ -619,6 +685,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       alert("Please select a map first!");
       return;
     }
+    const selectedBaseline = document.getElementById("baselineSelect")?.value || selectedMap;
 
     const originalText = launchSimBtn.innerHTML;
     launchSimBtn.disabled = true;
@@ -629,10 +696,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     try {
       const headlessVal = !!document.getElementById("headlessCheckbox")?.checked;
+      const seedVal = getBaselineSeed(selectedBaseline);
+
       const res = await fetch("/api/simulation/launch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ map_name: selectedMap, headless: headlessVal })
+        body: JSON.stringify({ map_name: selectedMap, headless: headlessVal, seed: seedVal })
       });
       const data = await res.json();
       if (!res.ok || data.error) {
@@ -644,9 +713,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       state.latestLive = null;
 
       // Load corresponding baseline
-      await loadBaselineForMap(selectedMap, true);
+      await loadBaselineForMap(selectedBaseline, true);
 
-      alert(`Simulation successfully launched for map: ${selectedMap.toUpperCase()}`);
+      alert(`Simulation successfully launched for map: ${selectedMap.toUpperCase()} (Seed: ${seedVal})`);
     } catch (err) {
       console.error(err);
       alert(`Failed to launch simulation: ${err.message}`);
@@ -697,365 +766,84 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   bindSocket();
 
-  const computeRocPrBtn = document.getElementById("computeRocPrBtn");
-  computeRocPrBtn?.addEventListener("click", () => {
-    computeAndPlotRocPr();
+
+
+  // Local JSON files comparison logic
+  const importBaselineInput = document.getElementById("importBaselineInput");
+  const importRunInput = document.getElementById("importRunInput");
+  const compareJsonBtn = document.getElementById("compareJsonBtn");
+  const clearCompareBtn = document.getElementById("clearCompareBtn");
+
+  compareJsonBtn?.addEventListener("click", () => {
+    const baselineFile = importBaselineInput?.files[0];
+    const runFile = importRunInput?.files[0];
+
+    if (!baselineFile || !runFile) {
+      alert("Please select both a baseline JSON file and a run JSON file to compare!");
+      return;
+    }
+
+    let loadedBaseline = null;
+    let loadedRun = null;
+
+    const readBaseline = new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const parsed = JSON.parse(e.target.result);
+          loadedBaseline = parsed;
+          resolve();
+        } catch (err) {
+          reject(new Error("Error parsing baseline JSON: " + err.message));
+        }
+      };
+      reader.onerror = () => reject(new Error("Error reading baseline file"));
+      reader.readAsText(baselineFile);
+    });
+
+    const readRun = new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const parsed = JSON.parse(e.target.result);
+          loadedRun = parsed;
+          resolve();
+        } catch (err) {
+          reject(new Error("Error parsing run JSON: " + err.message));
+        }
+      };
+      reader.onerror = () => reject(new Error("Error reading run file"));
+      reader.readAsText(runFile);
+    });
+
+    Promise.all([readBaseline, readRun])
+      .then(() => {
+        if (!Array.isArray(loadedBaseline) || !Array.isArray(loadedRun)) {
+          throw new Error("Both JSON files must contain arrays of simulation steps.");
+        }
+
+        // Apply loaded histories to local state
+        state.baselineHistory = loadedBaseline;
+        state.liveHistory = loadedRun;
+        state.latestLive = loadedRun[loadedRun.length - 1];
+
+        const currentTime = getPointTime(state.latestLive);
+
+        applyAllViews();
+        alert("JSON files loaded and compared successfully!");
+      })
+      .catch((err) => {
+        alert(err.message);
+      });
+  });
+
+  clearCompareBtn?.addEventListener("click", () => {
+    state.liveHistory = [];
+    state.latestLive = null;
+    if (importBaselineInput) importBaselineInput.value = "";
+    if (importRunInput) importRunInput.value = "";
+    preloadBaselineAtStartup();
+    applyAllViews();
+    alert("Comparison cleared.");
   });
 });
-
-let rocChart = null;
-let prChart = null;
-
-function computeAndPlotRocPr() {
-  if (state.liveHistory.length === 0) {
-    alert("No live simulation data available.");
-    return;
-  }
-  if (!state.baselineHistory || state.baselineHistory.length === 0) {
-    alert("No reference baseline map loaded. Please wait for the baseline data to load.");
-    return;
-  }
-  
-  // 1. Get downsampled histories up to 300s
-  const baselineSampled = downsampleToSeconds(state.baselineHistory).filter(pt => getPointTime(pt) <= 300);
-  const liveSampled = downsampleToSeconds(state.liveHistory).filter(pt => getPointTime(pt) <= 300);
-  
-  if (baselineSampled.length < 150) {
-    alert(`Baseline history only has ${baselineSampled.length} seconds. We need at least 150s to perform classification.`);
-    return;
-  }
-  if (liveSampled.length < 150) {
-    alert(`Live history only has ${liveSampled.length} seconds. Please run the simulation longer.`);
-    return;
-  }
-
-  const maxElapsed = Math.min(300, Math.floor(liveSampled.length));
-  const numWindows = Math.floor(maxElapsed / 10);
-
-  const baselineFiltered = baselineSampled.filter(pt => getPointTime(pt) <= maxElapsed);
-  const liveFiltered = liveSampled.filter(pt => getPointTime(pt) <= maxElapsed);
-  
-  // 2. Extract window features dynamically
-  const X_baseline = getWindowFeaturesJS(baselineFiltered, numWindows);
-  const X_live = getWindowFeaturesJS(liveFiltered, numWindows);
-  
-  // 3. Compute mean and covariance of baseline
-  const d = 5; // 5 features
-  const n_base = X_baseline.length;
-  
-  // Mean vector
-  const mu = Array(d).fill(0);
-  for (let i = 0; i < n_base; i++) {
-    for (let j = 0; j < d; j++) {
-      mu[j] += X_baseline[i][j];
-    }
-  }
-  for (let j = 0; j < d; j++) {
-    mu[j] /= n_base;
-  }
-  
-  // Covariance matrix
-  const cov = [];
-  for (let j = 0; j < d; j++) {
-    cov[j] = Array(d).fill(0);
-  }
-  for (let j = 0; j < d; j++) {
-    for (let k = 0; k < d; k++) {
-      let sum = 0;
-      for (let i = 0; i < n_base; i++) {
-        sum += (X_baseline[i][j] - mu[j]) * (X_baseline[i][k] - mu[k]);
-      }
-      cov[j][k] = sum / (n_base - 1);
-    }
-  }
-  // Regularize diagonal
-  for (let j = 0; j < d; j++) {
-    cov[j][j] += 1e-4;
-  }
-  
-  // Invert covariance matrix
-  let covInv;
-  try {
-    covInv = invertMatrixJS(cov);
-  } catch (err) {
-    console.error("Covariance inversion failed:", err);
-    alert("Could not invert baseline covariance matrix. Regularizing further...");
-    for (let j = 0; j < d; j++) {
-      cov[j][j] += 1e-2;
-    }
-    covInv = invertMatrixJS(cov);
-  }
-  
-  // 4. Compute Mahalanobis distances for each of the 20 windows in X_live
-  const distances = [];
-  const n_live = X_live.length;
-  for (let i = 0; i < n_live; i++) {
-    const diff = [];
-    for (let j = 0; j < d; j++) {
-      diff[j] = X_live[i][j] - mu[j];
-    }
-    const temp = Array(d).fill(0);
-    for (let j = 0; j < d; j++) {
-      for (let k = 0; k < d; k++) {
-        temp[j] += diff[k] * covInv[k][j];
-      }
-    }
-    let val = 0;
-    for (let j = 0; j < d; j++) {
-      val += temp[j] * diff[j];
-    }
-    distances.push(Math.sqrt(val));
-  }
-  
-  // 5. Compute ground truth labels dynamically from live history
-  const y_true = [];
-  for (let w = 0; w < n_live; w++) {
-    const windowPoints = liveFiltered.slice(w * 10, (w + 1) * 10);
-    const hasAttack = windowPoints.some(pt => (pt.active_attack_count > 0) || (pt.active_attack_types && pt.active_attack_types.length > 0));
-    y_true.push(hasAttack ? 1 : 0);
-  }
-
-  // Update attack window label dynamically in UI
-  const attackTimes = liveFiltered.filter(pt => (pt.active_attack_count > 0) || (pt.active_attack_types && pt.active_attack_types.length > 0)).map(pt => getPointTime(pt));
-  let attackLabelText = "No Attack Detected";
-  if (attackTimes.length > 0) {
-    const minTime = Math.min(...attackTimes);
-    const maxTime = Math.max(...attackTimes);
-    attackLabelText = `t = ${minTime.toFixed(0)}s to ${maxTime.toFixed(0)}s`;
-  }
-  const attackDetectionValEl = document.getElementById("attackDetectionVal");
-  if (attackDetectionValEl) {
-    attackDetectionValEl.textContent = attackLabelText;
-  }
-  
-  // 6. Compute curves
-  const thresholds = [];
-  for (let i = 0; i <= 200; i++) {
-    thresholds.push((i / 200) * 40.0);
-  }
-  
-  const fprs = [];
-  const tprs = [];
-  const recalls = [];
-  const precisions = [];
-  
-  for (const tau of thresholds) {
-    let tp = 0, fp = 0, tn = 0, fn = 0;
-    for (let i = 0; i < distances.length; i++) {
-      const pred = distances[i] > tau ? 1 : 0;
-      const y = y_true[i];
-      if (pred === 1 && y === 1) tp++;
-      else if (pred === 1 && y === 0) fp++;
-      else if (pred === 0 && y === 0) tn++;
-      else if (pred === 0 && y === 1) fn++;
-    }
-    const tpr = (tp + fn) > 0 ? (tp / (tp + fn)) : 0.0;
-    const fpr = (fp + tn) > 0 ? (fp / (fp + tn)) : 0.0;
-    const precision = (tp + fp) > 0 ? (tp / (tp + fp)) : 1.0;
-    const recall = tpr;
-    
-    fprs.push(fpr);
-    tprs.push(tpr);
-    recalls.push(recall);
-    precisions.push(precision);
-  }
-  
-  // Calculate AUCs
-  const aucRoc = computeAucJS(fprs, tprs);
-  const aucPr = Math.min(computeAucJS(recalls, precisions), 1.0);
-  
-  document.getElementById("rocAucVal").textContent = aucRoc.toFixed(3);
-  document.getElementById("prAucVal").textContent = aucPr.toFixed(3);
-  
-  // 7. Render Charts
-  renderRocPrCharts(fprs, tprs, recalls, precisions);
-  
-  // Show container
-  document.getElementById("rocPrContainer").style.display = "flex";
-}
-
-function getWindowFeaturesJS(sampled, numWindows) {
-  const features = [];
-  for (let w = 0; w < numWindows; w++) {
-    const windowPoints = sampled.slice(w * 10, (w + 1) * 10);
-    let sumStopped = 0, sumSpeed = 0, sumEB = 0, sumFuel = 0, sumCol = 0;
-    for (const pt of windowPoints) {
-      sumStopped += pt.stopped_ratio || 0;
-      sumSpeed += pt.avg_speed || 0;
-      const m = pt.metrics || {};
-      sumEB += m.emergency_breaking || 0;
-      sumFuel += m.fuel_consumption || 0;
-      sumCol += m.collision || 0;
-    }
-    const n = windowPoints.length || 1;
-    features.push([
-      sumStopped / n,
-      sumSpeed / n,
-      sumEB / n,
-      sumFuel / n,
-      sumCol / n
-    ]);
-  }
-  return features;
-}
-
-function invertMatrixJS(M) {
-  const n = M.length;
-  const I = [];
-  for (let i = 0; i < n; i++) {
-    I[i] = [];
-    for (let j = 0; j < n; j++) {
-      I[i][j] = (i === j) ? 1.0 : 0.0;
-    }
-  }
-  const A = [];
-  for (let i = 0; i < n; i++) {
-    A[i] = [...M[i]];
-  }
-  for (let i = 0; i < n; i++) {
-    let pivotRow = i;
-    for (let r = i + 1; r < n; r++) {
-      if (Math.abs(A[r][i]) > Math.abs(A[pivotRow][i])) {
-        pivotRow = r;
-      }
-    }
-    if (pivotRow !== i) {
-      let temp = A[i]; A[i] = A[pivotRow]; A[pivotRow] = temp;
-      temp = I[i]; I[i] = I[pivotRow]; I[pivotRow] = temp;
-    }
-    const pivot = A[i][i];
-    if (Math.abs(pivot) < 1e-12) {
-      throw new Error("Matrix is singular");
-    }
-    for (let j = 0; j < n; j++) {
-      A[i][j] /= pivot;
-      I[i][j] /= pivot;
-    }
-    for (let r = 0; r < n; r++) {
-      if (r === i) continue;
-      const factor = A[r][i];
-      for (let j = 0; j < n; j++) {
-        A[r][j] -= factor * A[i][j];
-        I[r][j] -= factor * I[i][j];
-      }
-    }
-  }
-  return I;
-}
-
-function computeAucJS(x, y) {
-  const points = x.map((xv, idx) => ({ x: xv, y: y[idx] }));
-  points.sort((a, b) => a.x - b.x);
-  
-  let auc = 0.0;
-  for (let i = 0; i < points.length - 1; i++) {
-    const dx = points[i+1].x - points[i].x;
-    const meanY = (points[i+1].y + points[i].y) / 2.0;
-    auc += dx * meanY;
-  }
-  return auc;
-}
-
-function renderRocPrCharts(fprs, tprs, recalls, precisions) {
-  const rocPoints = fprs.map((f, i) => ({ x: f, y: tprs[i] }));
-  rocPoints.sort((a, b) => {
-    if (Math.abs(a.x - b.x) < 1e-9) return a.y - b.y;
-    return a.x - b.x;
-  });
-  
-  const prPoints = recalls.map((r, i) => ({ x: r, y: precisions[i] }));
-  prPoints.sort((a, b) => {
-    if (Math.abs(a.x - b.x) < 1e-9) return a.y - b.y;
-    return a.x - b.x;
-  });
-
-  if (rocChart) rocChart.destroy();
-  if (prChart) prChart.destroy();
-
-  const ctxRoc = document.getElementById("rocChart").getContext("2d");
-  rocChart = new Chart(ctxRoc, {
-    type: "line",
-    data: {
-      datasets: [
-        {
-          label: "ROC Curve",
-          data: rocPoints,
-          borderColor: "#e11d48",
-          borderWidth: 2.5,
-          fill: false,
-          tension: 0.1,
-          pointRadius: 1.5,
-        },
-        {
-          label: "Random Guess",
-          data: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
-          borderColor: "#94a3b8",
-          borderWidth: 1.5,
-          borderDash: [5, 5],
-          fill: false,
-          pointRadius: 0,
-        }
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        x: {
-          type: "linear",
-          title: { display: true, text: "False Positive Rate (FPR)", font: { family: "Outfit", size: 10, weight: "bold" } },
-          min: 0,
-          max: 1,
-        },
-        y: {
-          type: "linear",
-          title: { display: true, text: "True Positive Rate (TPR)", font: { family: "Outfit", size: 10, weight: "bold" } },
-          min: 0,
-          max: 1,
-        }
-      },
-      plugins: {
-        legend: { display: false }
-      }
-    }
-  });
-
-  const ctxPr = document.getElementById("prChart").getContext("2d");
-  prChart = new Chart(ctxPr, {
-    type: "line",
-    data: {
-      datasets: [
-        {
-          label: "PR Curve",
-          data: prPoints,
-          borderColor: "#0284c7",
-          borderWidth: 2.5,
-          fill: false,
-          tension: 0.1,
-          pointRadius: 1.5,
-        }
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        x: {
-          type: "linear",
-          title: { display: true, text: "Recall", font: { family: "Outfit", size: 10, weight: "bold" } },
-          min: 0,
-          max: 1,
-        },
-        y: {
-          type: "linear",
-          title: { display: true, text: "Precision", font: { family: "Outfit", size: 10, weight: "bold" } },
-          min: 0,
-          max: 1,
-        }
-      },
-      plugins: {
-        legend: { display: false }
-      }
-    }
-  });
-}

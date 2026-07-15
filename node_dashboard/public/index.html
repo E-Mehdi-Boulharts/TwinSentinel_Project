@@ -440,16 +440,25 @@
     <div class="wrap">
       <header>
         <div class="brand">
-          <h1>VANET Live Monitor</h1>
+          <h1>TwinSentinel Live Monitor</h1>
           <p class="subtitle">Real-time comparison: standard simulation vs perturbed simulation</p>
         </div>
         <div class="map-selector-container">
-          <label for="mapSelect">Reference Map:</label>
+          <label for="mapSelect">Map:</label>
           <select id="mapSelect" class="select">
+            <option value="paris">Paris</option>
+            <option value="berlin">Berlin</option>
+            <option value="luxembourg">Luxembourg</option>
+            <option value="basic_simulation">Basic Simulation</option>
+          </select>
+
+          <label for="baselineSelect">Baseline:</label>
+          <select id="baselineSelect" class="select">
             <option value="">Loading...</option>
           </select>
+
           <label style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--ink-soft); cursor: pointer; user-select: none; text-transform: none; font-weight: 500; letter-spacing: normal;">
-            <input type="checkbox" id="headlessCheckbox" style="cursor: pointer; accent-color: var(--accent);" checked>
+            <input type="checkbox" id="headlessCheckbox" style="cursor: pointer; accent-color: var(--accent);">
             Headless (Fast)
           </label>
           <button id="launchSimBtn" class="launch-btn">
@@ -458,6 +467,35 @@
           </button>
         </div>
       </header>
+
+      <div class="row" style="margin-bottom: 24px;">
+        <div class="card">
+          <h3 style="margin-top: 0" id="chartTitle">Attack vs Baseline</h3>
+          <canvas id="speedChart" height="120"></canvas>
+          
+          <div class="controls" style="gap: 8px; margin-top: 12px;">
+            <button id="zoomInBtn" class="alt" title="Zoom in">🔍 Zoom +</button>
+            <button id="zoomOutBtn" class="alt" title="Zoom out">🔍 Zoom −</button>
+            <button id="resetViewBtn" class="alt" title="Reset view">🏠 Reset</button>
+            <button id="saveBaselineBtn" class="alt" style="border-color: rgba(22, 163, 74, 0.3); color: #16a34a; background: rgba(22, 163, 74, 0.05);" title="Save current run as baseline">💾 Save Baseline</button>
+            <button id="saveRunBtn" class="alt" style="border-color: rgba(14, 165, 233, 0.3); color: #0ea5e9; background: rgba(14, 165, 233, 0.05);" title="Export all collected run data to a file">💾 Export Run Data</button>
+            <span style="font-size: 0.82rem; color: var(--ink-soft); margin-left: 12px;">
+              💡 Drag to zoom. Hold <b>Shift</b> + drag to pan.
+            </span>
+          </div>
+        </div>
+        
+        <div class="card" style="display: flex; flex-direction: column;">
+          <h3 style="margin-top: 0">Comparison & Selection</h3>
+          <p style="margin: -8px 0 16px; font-size: 0.82rem; color: var(--ink-soft);">Click on any metric row to display it on the chart.</p>
+          <div class="table-container" style="flex: 1;">
+            <table class="table" id="compareTable">
+              <thead><tr><th>Metric</th><th>Attack</th><th>Baseline</th><th>Delta</th><th>Trend</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
 
       <div class="grid-top">
         <!-- Sim Time -->
@@ -529,90 +567,35 @@
         </div>
       </div>
 
-      <div class="row">
-        <div class="card">
-          <h3 style="margin-top: 0" id="chartTitle">Attack vs Baseline</h3>
-          <canvas id="speedChart" height="120"></canvas>
-          
-          <div class="controls" style="gap: 8px; margin-top: 12px;">
-            <button id="zoomInBtn" class="alt" title="Zoom in">🔍 Zoom +</button>
-            <button id="zoomOutBtn" class="alt" title="Zoom out">🔍 Zoom −</button>
-            <button id="resetViewBtn" class="alt" title="Reset view">🏠 Reset</button>
-            <button id="saveBaselineBtn" class="alt" style="border-color: rgba(22, 163, 74, 0.3); color: #16a34a; background: rgba(22, 163, 74, 0.05);" title="Save current run as baseline">💾 Save Baseline</button>
-            <button id="saveRunBtn" class="alt" style="border-color: rgba(14, 165, 233, 0.3); color: #0ea5e9; background: rgba(14, 165, 233, 0.05);" title="Export all collected run data to a file">💾 Export Run Data</button>
-            <span style="font-size: 0.82rem; color: var(--ink-soft); margin-left: 12px;">
-              💡 Drag to zoom. Hold <b>Shift</b> + drag to pan.
-            </span>
+      <div class="card" style="margin-bottom: 24px; border-color: var(--accent-2); background: rgba(2, 132, 199, 0.015);">
+        <h3 style="margin-top: 0; color: var(--accent-2);">📁 Compare Saved JSON Files</h3>
+        <p style="margin: -8px 0 16px; font-size: 0.82rem; color: var(--ink-soft);">
+          Directly upload and compare a saved baseline JSON and a simulation run JSON file. No live simulation required.
+        </p>
+        <div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center;">
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <span style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: var(--ink-soft);">1. Load Baseline JSON</span>
+            <input type="file" id="importBaselineInput" accept=".json" style="font-size: 0.82rem; font-family: inherit;">
           </div>
-        </div>
-        
-        <div class="card" style="display: flex; flex-direction: column;">
-          <h3 style="margin-top: 0">Comparison & Selection</h3>
-          <p style="margin: -8px 0 16px; font-size: 0.82rem; color: var(--ink-soft);">Click on any metric row to display it on the chart.</p>
-          <div class="table-container" style="flex: 1;">
-            <table class="table" id="compareTable">
-              <thead><tr><th>Metric</th><th>Attack</th><th>Baseline</th><th>Delta</th><th>Trend</th></tr></thead>
-              <tbody></tbody>
-            </table>
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <span style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; color: var(--ink-soft);">2. Load Run JSON</span>
+            <input type="file" id="importRunInput" accept=".json" style="font-size: 0.82rem; font-family: inherit;">
+          </div>
+          <div style="margin-top: 14px; display: flex; gap: 8px;">
+            <button id="compareJsonBtn" class="launch-btn" style="background: var(--accent-2); border-color: var(--accent-2); color: white; padding: 8px 16px; font-weight: 700; box-shadow: 0 2px 4px rgba(2, 132, 199, 0.15);">
+              📊 Compare Uploads
+            </button>
+            <button id="clearCompareBtn" class="alt" style="border-color: rgba(225, 29, 72, 0.3); color: var(--danger); background: rgba(225, 29, 72, 0.05); padding: 8px 16px;">
+              ❌ Clear
+            </button>
           </div>
         </div>
       </div>
 
-      <!-- Adversarial Analysis (ROC & PR) -->
-      <div class="card" style="margin-top: 24px; margin-bottom: 24px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
-          <h3 style="margin: 0">Adversarial Performance Analysis (ROC & PR)</h3>
-          <button id="computeRocPrBtn" class="launch-btn" style="background: var(--accent-2); box-shadow: 0 2px 4px rgba(2, 132, 199, 0.15);" disabled>
-            📊 Compute ROC & PR Curves
-          </button>
-        </div>
-        <p style="margin: -8px 0 16px; font-size: 0.82rem; color: var(--ink-soft);">
-          Evaluate the classification performance of security detection by comparing the live simulation against the reference baseline map. 
-          Requires the simulation to reach at least 200 seconds (and can continue to run).
-        </p>
-        
-        <div id="rocPrContainer" style="display: none; flex-direction: column; gap: 24px; margin-top: 16px;">
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px;">
-            <div style="background: #ffffff; border: 1px solid var(--panel-border); border-radius: 12px; padding: 16px; height: 260px; display: flex; flex-direction: column;">
-              <h4 style="margin: 0 0 12px; font-size: 0.95rem; font-weight: 700; text-align: center; color: var(--ink-soft);">Receiver Operating Characteristic (ROC)</h4>
-              <div style="flex: 1; position: relative; min-height: 0;">
-                <canvas id="rocChart"></canvas>
-              </div>
-            </div>
-            <div style="background: #ffffff; border: 1px solid var(--panel-border); border-radius: 12px; padding: 16px; height: 260px; display: flex; flex-direction: column;">
-              <h4 style="margin: 0 0 12px; font-size: 0.95rem; font-weight: 700; text-align: center; color: var(--ink-soft);">Precision-Recall Curve</h4>
-              <div style="flex: 1; position: relative; min-height: 0;">
-                <canvas id="prChart"></canvas>
-              </div>
-            </div>
-          </div>
-          
-          <div style="background: #f8fafc; border: 1px solid var(--panel-border); border-radius: 12px; padding: 16px; margin-top: 8px;">
-            <h4 style="margin: 0 0 12px; font-size: 0.9rem; font-weight: 700; color: var(--ink);">Detection Performance Results (t = 0s to 200s)</h4>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
-              <div>
-                <span style="font-size: 0.8rem; text-transform: uppercase; color: var(--ink-soft); font-weight: 600;">ROC Area Under Curve (ROC-AUC)</span>
-                <div style="font-size: 1.8rem; font-weight: 800; color: var(--accent);" id="rocAucVal">-</div>
-                <p style="margin: 4px 0 0; font-size: 0.75rem; color: var(--ink-soft);">Ability to distinguish normal vs attacked steps (closer to 1.00 is better).</p>
-              </div>
-              <div>
-                <span style="font-size: 0.8rem; text-transform: uppercase; color: var(--ink-soft); font-weight: 600;">PR Area Under Curve (PR-AUC)</span>
-                <div style="font-size: 1.8rem; font-weight: 800; color: var(--accent-2);" id="prAucVal">-</div>
-                <p style="margin: 4px 0 0; font-size: 0.75rem; color: var(--ink-soft);">Precision-recall trade-off (closer to 1.00 is better).</p>
-              </div>
-              <div>
-                <span style="font-size: 0.8rem; text-transform: uppercase; color: var(--ink-soft); font-weight: 600;">Attack Window Detection</span>
-                <div style="font-size: 1.1rem; font-weight: 700; color: var(--danger); margin-top: 6px;" id="attackDetectionVal">t = 100s to 200s</div>
-                <p style="margin: 4px 0 0; font-size: 0.75rem; color: var(--ink-soft);">Assumes the attack is active starting at 100s. Feature vectors are calculated per 10s window.</p>
-              </div>
-            </div>
-          </div>
-        </div>
-        
-        <div id="rocPrWarning" style="background: rgba(245, 158, 11, 0.05); border: 1px dashed #f59e0b; border-radius: 12px; padding: 16px; text-align: center; color: #b45309; font-size: 0.85rem;">
-          ⚠️ Waiting for simulation to reach 200 seconds before analysis can be performed. Current time: <span id="rocPrCurrentTime" style="font-weight: 700;">0.0s</span>
-        </div>
-      </div>
+
+
+
+
     </div>
 
     <script src="/socket.io/socket.io.js"></script>

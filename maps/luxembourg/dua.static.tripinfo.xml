@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-14T12:56:27.404708+00:00 by Eclipse SUMO sumo 1.26.0
+<sumoConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <net-file value="/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/lust.net.xml"/>
+        <route-files value="/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/buslines.rou.xml,/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/DUARoutes/local.0.rou.xml,/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/DUARoutes/local.1.rou.xml,/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/DUARoutes/local.2.rou.xml,/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/transit.rou.xml"/>
+        <additional-files value="/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/vtypes.add.xml,/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/busstops.add.xml,/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/e1detectors.add.xml,/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/lust.poly.xml,/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/tll.static.xml"/>
+    </input>
+
+    <output>
+        <summary-output value="/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/dua.static.summary.xml"/>
+        <tripinfo-output value="/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/dua.static.tripinfo.xml"/>
+    </output>
+
+    <time>
+        <begin value="0"/>
+        <step-length value="0.05"/>
+    </time>
+
+    <processing>
+        <lateral-resolution value="0.1"/>
+        <ignore-junction-blocker value="20"/>
+        <time-to-teleport value="600"/>
+        <max-depart-delay value="600"/>
+    </processing>
+
+    <routing>
+        <routing-algorithm value="dijkstra"/>
+        <device.rerouting.probability value="0.70"/>
+        <device.rerouting.period value="300"/>
+        <device.rerouting.pre-period value="300"/>
+    </routing>
+
+    <report>
+        <verbose value="true"/>
+        <no-warnings value="true"/>
+        <log value="/home/mehdi/VANET_Project/Docker_files/maps/luxembourg/dua.static.log"/>
+    </report>
+
+    <traci_server>
+        <remote-port value="57859"/>
+    </traci_server>
+
+    <random_number>
+        <seed value="20"/>
+    </random_number>
+
+    <gui_only>
+        <start value="true"/>
+        <delay value="0"/>
+    </gui_only>
+
+</sumoConfiguration>
+-->
+
+<tripinfos xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/tripinfo_file.xsd">
+    <tripinfo id="randUni834:1" depart="5.00" departLane="--32406#3_0" departPos="86.56" departPosLat="0.00" departSpeed="0.00" departDelay="0.00" arrival="39.95" arrivalLane="--31212_0" arrivalPos="167.99" arrivalPosLat="0.00" arrivalSpeed="0.84" duration="34.95" routeLength="409.83" waitingTime="0.00" waitingCount="0" stopTime="0.00" timeLoss="4.42" rerouteNo="0" devices="tripinfo_randUni834:1" vType="passenger2b" speedFactor="0.97" vaporized=""/>
+    <tripinfo id="randUni16882:1" depart="14.00" departLane="-32340#7_0" departPos="193.35" departPosLat="0.00" departSpeed="0.00" departDelay="0.00" arrival="100.70" arrivalLane="-32660_0" arrivalPos="0.23" arrivalPosLat="0.00" arrivalSpeed="0.95" duration="86.70" routeLength="1059.19" waitingTime="0.00" waitingCount="0" stopTime="0.00" timeLoss="7.82" rerouteNo="0" devices="tripinfo_randUni16882:1 routing_randUni16882:1" vType="passenger1" speedFactor="0.97" vaporized=""/>
+    <tripinfo id="randUni11317:1" depart="11.00" departLane="--31490_0" departPos="45.97" departPosLat="0.00" departSpeed="0.00" departDelay="0.00" arrival="150.60" arrivalLane="-31290#1_0" arrivalPos="40.55" arrivalPosLat="-0.00" arrivalSpeed="0.90" duration="139.60" routeLength="1768.74" waitingTime="0.00" waitingCount="0" stopTime="0.00" timeLoss="9.30" rerouteNo="0" devices="tripinfo_randUni11317:1" vType="passenger2a" speedFactor="0.96" vaporized=""/>
+    <tripinfo id="randUni13606:1" depart="27.00" departLane="--32244_0" departPos="66.32" departPosLat="0.00" departSpeed="0.00" departDelay="0.00" arrival="234.45" arrivalLane="-31068#1_0" arrivalPos="64.74" arrivalPosLat="0.00" arrivalSpeed="0.89" duration="207.45" routeLength="2728.32" waitingTime="10.55" waitingCount="3" stopTime="0.00" timeLoss="43.42" rerouteNo="0" devices="tripinfo_randUni13606:1 routing_randUni13606:1" vType="passenger4@randUni13606:1" speedFactor="1.18" vaporized=""/>
+    <tripinfo id="NBSKMS_Nightbus_0" depart="39.00" departLane="-32278#1_0" departPos="0.00" departPosLat="0.00" departSpeed="0.00" departDelay="0.00" arrival="257.00" arrivalLane="-32278#5_0" arrivalPos="841.44" arrivalPosLat="0.00" arrivalSpeed="15.99" duration="218.00" routeLength="1905.19" waitingTime="6.45" waitingCount="2" stopTime="60.00" timeLoss="17.08" rerouteNo="0" devices="tripinfo_NBSKMS_Nightbus_0" vType="bus@NBSKMS_Nightbus_0" speedFactor="1.15" vaporized=""/>
+    <tripinfo id="0FRtoLU.0" depart="42.00" departLane="-32426#0_0" departPos="5.10" departPosLat="0.00" departSpeed="13.89" departDelay="0.00" arrival="279.20" arrivalLane="-32400#5_0" arrivalPos="257.03" arrivalPosLat="-0.00" arrivalSpeed="38.21" duration="237.20" routeLength="6507.94" waitingTime="0.00" waitingCount="0" stopTime="0.00" timeLoss="10.09" rerouteNo="0" devices="tripinfo_0FRtoLU.0" vType="passenger1@0FRtoLU.0" speedFactor="1.06" vaporized=""/>
+    <tripinfo id="randUni18368:1" depart="0.00" departLane="-31606#0_0" departPos="286.46" departPosLat="0.00" departSpeed="0.00" departDelay="0.00" arrival="284.60" arrivalLane="-30496#4_1" arrivalPos="97.54" arrivalPosLat="-0.00" arrivalSpeed="1.04" duration="284.60" routeLength="2773.19" waitingTime="72.75" waitingCount="4" stopTime="0.00" timeLoss="107.29" rerouteNo="0" devices="tripinfo_randUni18368:1 routing_randUni18368:1" vType="passenger2a@randUni18368:1" speedFactor="1.12" vaporized=""/>
+</tripinfos>
+er1@0FRtoLU.0" speedFactor="1.01" vaporized=""/>
+</tripinfos>

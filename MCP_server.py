@@ -2,9 +2,12 @@
 #         IMPORTS
 # =============================
 import os
+import socket
+socket.setdefaulttimeout(300.0)
 import subprocess
 import sys
 import threading
+import math
 from datetime import datetime
 import traci
 from fastmcp import FastMCP
@@ -43,6 +46,7 @@ baseline_reference = None
 baseline_reference_map = None
 baseline_cache = {}
 current_map_name = "basic"  # Track which map is currently running
+current_simulation_seed = 42  # Track active simulation seed
 metrics_lock = threading.Lock()
 METRIC_KEYS = [
     "fuel_consumption",
@@ -145,14 +149,14 @@ else:
 # Add paths for files in the different map folders
 # For Docker: use /app paths, For local: use actual paths
 if os.path.exists("/.dockerenv"):
-    map_path_basic = os.path.join(current_dir, "basic_simulation", "osm.sumocfg")
+    map_path_basic = os.path.join(current_dir, "maps", "basic_simulation", "osm.sumocfg")
 else:
     # Local Ubuntu: use absolute path or detect from environment
-    map_path_basic = os.getenv("SUMO_MAP_BASIC", "/home/mehdi/VANET_Project/Docker_files/basic_simulation/osm.sumocfg")
+    map_path_basic = os.getenv("SUMO_MAP_BASIC", "/home/mehdi/VANET_Project/Docker_files/maps/basic_simulation/osm.sumocfg")
 
-map_path_paris = os.path.join(current_dir, "paris", "map.sumocfg")
-map_path_berlin = os.path.join(current_dir, "berlin", "berlin.sumocfg")
-map_path_luxembourg = os.path.join(current_dir, "luxembourg", "dua.static.sumocfg")
+map_path_paris = os.path.join(current_dir, "maps", "paris", "map.sumocfg")
+map_path_berlin = os.path.join(current_dir, "maps", "berlin", "berlin.sumocfg")
+map_path_luxembourg = os.path.join(current_dir, "maps", "luxembourg", "dua.static.sumocfg")
 
 
 # =============================
@@ -228,8 +232,19 @@ def _normalize_map_name(map_name: str) -> str:
     return aliases.get(key, key)
 
 
-def _baseline_file_path(map_name: str) -> str:
-    return os.path.join(BASELINE_DIR, f"baseline_{_normalize_map_name(map_name)}.json")
+def _baseline_file_path(map_name: str, seed: int | None = None) -> str:
+    norm = _normalize_map_name(map_name)
+    if norm.startswith("paris_seed_") or norm.startswith("berlin_seed_") or norm.startswith("lux_seed_"):
+        return os.path.join(BASELINE_DIR, f"baseline_{norm}.json")
+    if seed is None:
+        seed = current_simulation_seed
+    if norm == "paris":
+        return os.path.join(BASELINE_DIR, f"baseline_paris_seed_{seed}.json")
+    if norm == "berlin":
+        return os.path.join(BASELINE_DIR, f"baseline_berlin_seed_{seed}.json")
+    if norm in ["luxembourg", "lux"]:
+        return os.path.join(BASELINE_DIR, f"baseline_lux_seed_{seed}.json")
+    return os.path.join(BASELINE_DIR, f"baseline_{norm}.json")
 
 
 def _available_baselines() -> list:
@@ -242,18 +257,36 @@ def _available_baselines() -> list:
     )
 
 
-def _load_baseline_into_cache(map_name: str, force_reload: bool = False):
+def _load_baseline_into_cache(map_name: str, seed: int | None = None, force_reload: bool = False):
     normalized = _normalize_map_name(map_name)
-    if not force_reload and normalized in baseline_cache:
-        return baseline_cache[normalized], None
+    if normalized.startswith("paris_seed_") or normalized.startswith("berlin_seed_") or normalized.startswith("lux_seed_"):
+        cache_key = normalized
+    else:
+        if seed is None:
+            seed = current_simulation_seed
+        if normalized == "paris":
+            cache_key = f"paris_seed_{seed}"
+        elif normalized == "berlin":
+            cache_key = f"berlin_seed_{seed}"
+        elif normalized in ["luxembourg", "lux"]:
+            cache_key = f"lux_seed_{seed}"
+        else:
+            cache_key = normalized
 
-    baseline_file = _baseline_file_path(normalized)
+    if not force_reload and cache_key in baseline_cache:
+        return baseline_cache[cache_key], None
+
+    if normalized.startswith("paris_seed_") or normalized.startswith("berlin_seed_") or normalized.startswith("lux_seed_"):
+        baseline_file = _baseline_file_path(normalized)
+    else:
+        baseline_file = _baseline_file_path(normalized, seed)
+
     if not os.path.exists(baseline_file):
         return None, f"Baseline not found: {baseline_file}"
 
     with open(baseline_file, "r", encoding="utf-8") as f:
         loaded = json.load(f)
-    baseline_cache[normalized] = loaded
+    baseline_cache[cache_key] = loaded
     return loaded, None
 
 
@@ -277,19 +310,36 @@ def is_real_vehicle(veh_id):
 
 def collect_vehicle_data(step):
     """Collect vehicle data for a given step"""
+    global active_attacks
     step_data = {
         "step": step,
         "timestamp": datetime.now().isoformat(),
         "vehicles": []
     }
 
+    # Check if universal perturbation attack is active to spoof reported GPS positions
+    universal_active = False
+    dx, dy = 0.0, 0.0
+    for attack in active_attacks:
+        if attack['type'] == 'universal_perturbation':
+            universal_active = True
+            pert = attack['data'].get('perturbation', {})
+            pos_pert = pert.get('position', [0.0, 0.0])
+            # Scale by 50.0 to translate sub-meter epsilon to physically significant meter-scale shift
+            dx, dy = float(pos_pert[0]) * 50.0, float(pos_pert[1]) * 50.0
+            break
+
     vehicle_ids = [vid for vid in traci.vehicle.getIDList() if is_real_vehicle(vid)]
     for veh_id in vehicle_ids:
         try:
+            pos = traci.vehicle.getPosition(veh_id)
+            if universal_active:
+                pos = (pos[0] + dx, pos[1] + dy)
+
             vehicle_data = {
                 "id": veh_id,
                 "speed": traci.vehicle.getSpeed(veh_id),
-                "position": traci.vehicle.getPosition(veh_id),
+                "position": pos,
                 "angle": traci.vehicle.getAngle(veh_id),
                 "road_id": traci.vehicle.getRoadID(veh_id),
                 "vehicle_type": traci.vehicle.getTypeID(veh_id),
@@ -370,6 +420,7 @@ def collect_realtime_snapshot(step, current_time, vehicle_ids, step_data):
     stopped_count = sum(1 for speed in speeds if speed < 0.5)
     avg_speed = (sum(speeds) / len(speeds)) if speeds else 0.0
 
+    from traci import constants as tc
     fuel_consumption_step = 0.0
     co2_total = 0.0
     noise_total = 0.0
@@ -380,14 +431,32 @@ def collect_realtime_snapshot(step, current_time, vehicle_ids, step_data):
 
     for vehicle_id in real_vehicle_ids:
         try:
-            speed = traci.vehicle.getSpeed(vehicle_id)
-            acceleration = traci.vehicle.getAcceleration(vehicle_id)
-            fuel_consumption_step += max(_safe_vehicle_metric(vehicle_id, "getFuelConsumption", 0.0) / 1000.0, 0.0)
-            co2_total += max(_safe_vehicle_metric(vehicle_id, "getCO2Emission", 0.0), 0.0)
-            noise_total += max(_safe_vehicle_metric(vehicle_id, "getNoiseEmission", 0.0), 0.0)
-            pm_total += max(_safe_vehicle_metric(vehicle_id, "getPMxEmission", 0.0), 0.0)
-            nox_total += max(_safe_vehicle_metric(vehicle_id, "getNOxEmission", 0.0), 0.0)
-            nvmoc_total += max(_safe_vehicle_metric(vehicle_id, "getHCEmission", 0.0), 0.0)
+            sub = traci.vehicle.getSubscriptionResults(vehicle_id) or {}
+            if sub:
+                speed = sub.get(tc.VAR_SPEED, 0.0)
+                acceleration = sub.get(tc.VAR_ACCEL, 0.0)
+                fuel = sub.get(tc.VAR_FUELCONSUMPTION, 0.0)
+                co2 = sub.get(tc.VAR_CO2EMISSION, 0.0)
+                noise = sub.get(tc.VAR_NOISEEMISSION, 0.0)
+                pm = sub.get(tc.VAR_PMXEMISSION, 0.0)
+                nox = sub.get(tc.VAR_NOXEMISSION, 0.0)
+                hc = sub.get(tc.VAR_HCEMISSION, 0.0)
+            else:
+                speed = traci.vehicle.getSpeed(vehicle_id)
+                acceleration = traci.vehicle.getAcceleration(vehicle_id)
+                fuel = _safe_vehicle_metric(vehicle_id, "getFuelConsumption", 0.0)
+                co2 = _safe_vehicle_metric(vehicle_id, "getCO2Emission", 0.0)
+                noise = _safe_vehicle_metric(vehicle_id, "getNoiseEmission", 0.0)
+                pm = _safe_vehicle_metric(vehicle_id, "getPMxEmission", 0.0)
+                nox = _safe_vehicle_metric(vehicle_id, "getNOxEmission", 0.0)
+                hc = _safe_vehicle_metric(vehicle_id, "getHCEmission", 0.0)
+
+            fuel_consumption_step += max(fuel / 1000.0, 0.0)
+            co2_total += max(co2, 0.0)
+            noise_total += max(noise, 0.0)
+            pm_total += max(pm, 0.0)
+            nox_total += max(nox, 0.0)
+            nvmoc_total += max(hc, 0.0)
 
             if speed > 0 and acceleration < -3.0:
                 emergency_braking += 1
@@ -479,7 +548,8 @@ def simulation_loop():
 
                 
             for attack in active_attacks[:]:
-                if current_time > attack['start_time'] + attack['duration']:
+                # Attacks with a negative duration (e.g., -1) are persistent and never expire automatically
+                if attack.get('duration', 0) >= 0 and current_time > attack['start_time'] + attack['duration']:
                     try:
                         if attack['type'] == 'traffic_light_tampering':
                             for tls in _traffic_light_attack_targets(attack):
@@ -527,25 +597,29 @@ def simulation_loop():
                                     except:
                                         pass
                         elif attack['type'] == 'universal_perturbation':
-                            # Restore original max speeds for all vehicles
+                            # Restore original speeds, lane change modes, and colors for all vehicles
                             try:
                                 original_states = attack['data'].get('original_vehicle_states', {})
                                 for veh_id, state in original_states.items():
                                     if veh_id in traci.vehicle.getIDList():
                                         # Restore original max speed
-                                        original_max_speed = state.get('max_speed', 50.0)  # Default fallback
+                                        original_max_speed = state.get('max_speed', 50.0)
                                         traci.vehicle.setMaxSpeed(veh_id, original_max_speed)
-                                        traci.vehicle.setSpeed(veh_id, -1)
-                                        # Restore original color so attacked vehicles blend back
-                                        # into the fleet visually instead of being forced white.
+                                        traci.vehicle.setSpeed(veh_id, -1)  # Hand back control to SUMO
+                                        
+                                        # Restore lane change mode
+                                        original_lcm = state.get('lane_change_mode', 1621)
+                                        traci.vehicle.setLaneChangeMode(veh_id, original_lcm)
+                                        
+                                        # Restore original color
                                         original_color = state.get('color')
                                         if original_color is not None:
                                             traci.vehicle.setColor(veh_id, original_color)
                                         else:
                                             traci.vehicle.setColor(veh_id, (255, 255, 255))
-                                logger.info(f"✓ ATTACK ENDED: Universal Perturbation - restored {len(original_states)} vehicles to normal speeds")
+                                logger.info(f"✓ ATTACK ENDED: Universal Perturbation - restored {len(original_states)} vehicles to normal behavior")
                             except Exception as restore_error:
-                                logger.warning(f"Could not fully restore speeds after universal perturbation: {restore_error}")
+                                logger.warning(f"Could not fully restore behaviors after universal perturbation: {restore_error}")
                         elif attack['type'] == 'adversarial_red_vehicles':
                             # Remove obstacles created by the attack
                             try:
@@ -654,61 +728,76 @@ def simulation_loop():
                             attack['data']['affected_vehicles'] = list(affected_vehs)
                         
                         elif attack['type'] == 'universal_perturbation':
-                            # Apply a non-cumulative deceleration to vehicles based on
-                            # the universal perturbation parameters. We record each
-                            # vehicle's original speed on first contact and always
-                            # compute the perturbed speed relative to that original
-                            # value so the effect is strong but not cumulatively
-                            # shrinking to zero.
+                            # GPS Spoofing Attack (Application/ADAS Level):
+                            # The vehicle's physical position is untouched (no moveToXY), but its
+                            # onboard system behaves erratically because it makes decisions using
+                            # the spoofed GPS position.
                             vehicle_ids = traci.vehicle.getIDList()
                             original_states = attack['data'].setdefault('original_vehicle_states', {})
 
-                            # Parameters controlling effect. These come from the
-                            # attack creation (defaults provided for safety).
-                            attack_epsilon = float(attack['data'].get('epsilon', 0.25))
-                            scale_velocity = float(attack['data'].get('scale_velocity', 1.0))
-                            # Fraction of original speed to remove (capped)
-                            dv_fraction = min(0.75, attack_epsilon * scale_velocity)
-                            min_speed_floor = float(attack['data'].get('min_speed_floor', 1.0))
+                            # Retrieve perturbation parameters
+                            pert = attack['data'].get('perturbation', {})
+                            pos_pert = pert.get('position', [0.0, 0.0])
+                            dx, dy = pos_pert[0], pos_pert[1]
 
                             for veh_id in vehicle_ids:
+                                if not is_real_vehicle(veh_id):
+                                    continue
                                 try:
                                     # Save original values when we first see the vehicle
                                     if veh_id not in original_states:
                                         original_states[veh_id] = {
                                             'max_speed': traci.vehicle.getMaxSpeed(veh_id),
-                                            'speed': traci.vehicle.getSpeed(veh_id),
                                             'color': traci.vehicle.getColor(veh_id),
+                                            'lane_change_mode': traci.vehicle.getLaneChangeMode(veh_id)
                                         }
 
-                                    state = original_states[veh_id]
-                                    original_speed = state.get('speed', traci.vehicle.getSpeed(veh_id))
-                                    original_max_speed = state.get('max_speed', traci.vehicle.getMaxSpeed(veh_id))
+                                    # Calculate GPS error magnitude scaled to meters (e.g. 50x multiplier)
+                                    # to make the perturbation physically significant in the decision logic.
+                                    gps_error_magnitude = math.sqrt(dx*dx + dy*dy) * 50.0
 
-                                    # Compute perturbed speed relative to the original
-                                    # speed recorded at the start/arrival of the vehicle.
-                                    perturbed_speed = max(min_speed_floor, original_speed * (1.0 - dv_fraction))
+                                    # 1. Phantom Traffic Light / Intersection Stop
+                                    next_tls = traci.vehicle.getNextTLS(veh_id)
+                                    reacted_to_tls = False
+                                    if gps_error_magnitude > 5.0 and next_tls:
+                                        tls_id, tls_index, dist_to_tls, state = next_tls[0]
+                                        # If the light is red or yellow, and vehicle is within detection zone
+                                        if dist_to_tls > 10.0 and dist_to_tls < 40.0 and state.lower() in ['r', 'y']:
+                                            # Apply braking: slow down to 0 over 2 seconds (phantom stop)
+                                            traci.vehicle.slowDown(veh_id, 0.0, 2.5)
+                                            traci.vehicle.setColor(veh_id, (255, 69, 0)) # Red-Orange
+                                            reacted_to_tls = True
 
-                                    # Apply the perturbation idempotently (always relative
-                                    # to original values) so repeated application each
-                                    # step does not reduce speed further.
-                                    try:
-                                        traci.vehicle.setSpeed(veh_id, perturbed_speed)
-                                    except Exception:
-                                        # Some SUMO configurations restrict setSpeed;
-                                        # fall back to limiting max speed instead.
-                                        perturbed_max_speed = max(perturbed_speed, original_max_speed * (1.0 - dv_fraction))
-                                        traci.vehicle.setMaxSpeed(veh_id, perturbed_max_speed)
+                                    if reacted_to_tls:
+                                        continue
 
-                                    # Also ensure the vehicle can't be instantaneously
-                                    # commanded to go faster than the perturbed bound.
-                                    traci.vehicle.setMaxSpeed(veh_id, max(perturbed_speed, original_max_speed * (1.0 - dv_fraction)))
+                                    # 2. Phantom Leader braking (Adaptive Cruise Control confusion)
+                                    leader_info = traci.vehicle.getLeader(veh_id, 50.0)
+                                    reacted_to_leader = False
+                                    if gps_error_magnitude > 5.0 and leader_info:
+                                        leader_id, physical_dist = leader_info
+                                        # The GPS error causes the ACC to overestimate collision risk, triggering deceleration.
+                                        decel_factor = min(0.5, (gps_error_magnitude / 25.0) * 0.5)
+                                        target_speed = max(2.0, speed * (1.0 - decel_factor))
+                                        traci.vehicle.slowDown(veh_id, target_speed, 1.5)
+                                        traci.vehicle.setColor(veh_id, (255, 140, 0)) # Dark Orange
+                                        reacted_to_leader = True
 
-                                    # Color vehicle to show it's under attack
-                                    traci.vehicle.setColor(veh_id, (255, 165, 0))  # Orange = perturbed
+                                    if reacted_to_leader:
+                                        continue
+
+                                    # 3. Disable Lane-Changing / Freezing in Lane
+                                    if gps_error_magnitude > 5.0:
+                                        # Disabled lane changing completely (mode 512)
+                                        traci.vehicle.setLaneChangeMode(veh_id, 512)
+                                        traci.vehicle.setColor(veh_id, (255, 165, 0)) # Orange
+                                    else:
+                                        # Restore normal lane change mode (default 1621)
+                                        traci.vehicle.setLaneChangeMode(veh_id, 1621)
+                                        traci.vehicle.setColor(veh_id, (255, 255, 255))
 
                                 except Exception as e:
-                                    logger.debug(f"Could not apply perturbation to {veh_id}: {e}")
+                                    logger.debug(f"Could not apply ADAS perturbation to {veh_id}: {e}")
                         
                         elif attack['type'] == 'adversarial_red_vehicles':
                             # Keep obstacle vehicles frozen at their positions
@@ -1060,8 +1149,8 @@ def check():
 #         MCP TOOLS
 # =============================
 
-def _safe_launch_simulation(map_name: str, config_path: str, port: int, step_length: float = 0.05, lateral_resolution: float = 0.1, delay: int = None, headless: bool = False) -> dict:
-    global current_map_name, traci_connection, running, simulation_thread, step_counter, simulation_data, launch_error, launching
+def _safe_launch_simulation(map_name: str, config_path: str, port: int, step_length: float = 0.05, lateral_resolution: float = 0.1, delay: int = None, headless: bool = False, seed: int = 42) -> dict:
+    global current_map_name, traci_connection, running, simulation_thread, step_counter, simulation_data, launch_error, launching, current_simulation_seed
     
     # 1. Stop any running loop
     if running:
@@ -1082,14 +1171,24 @@ def _safe_launch_simulation(map_name: str, config_path: str, port: int, step_len
         logger.warning(f"Error killing sumo processes: {e}")
 
     # 3. Close active TraCI connection and clear connection registry
-    if traci_connection is not None:
-        logger.info("Closing active TraCI connection...")
-        try:
-            traci.close()
-        except Exception as e:
-            logger.debug(f"Error closing TraCI connection: {e}")
-        traci_connection = None
+    logger.info("Closing active TraCI connection...")
+    try:
+        traci.close()
+    except Exception as e:
+        logger.debug(f"Error closing TraCI connection: {e}")
+    traci_connection = None
         
+    try:
+        import traci.connection
+        traci.connection._connections.clear()
+    except Exception:
+        pass
+    try:
+        import traci.main
+        if 'default' in traci.main._connections:
+            del traci.main._connections['default']
+    except Exception:
+        pass
     try:
         if 'default' in traci._connections:
             del traci._connections['default']
@@ -1100,6 +1199,7 @@ def _safe_launch_simulation(map_name: str, config_path: str, port: int, step_len
     time.sleep(1.0)
     
     current_map_name = map_name
+    current_simulation_seed = seed
     step_counter = 0
     simulation_data = []
     launch_error = None
@@ -1108,7 +1208,7 @@ def _safe_launch_simulation(map_name: str, config_path: str, port: int, step_len
     def _launch_thread():
         global traci_connection, running, launch_error, launching
         try:
-            logger.info(f"Launching SUMO ({map_name}) with config: {config_path}")
+            logger.info(f"Launching SUMO ({map_name}) with config: {config_path} (seed: {seed})")
             if headless:
                 binary = "sumo"
             else:
@@ -1118,7 +1218,7 @@ def _safe_launch_simulation(map_name: str, config_path: str, port: int, step_len
                 binary,
                 "-c", config_path,
                 "--step-length", str(step_length),
-                "--seed", "42",
+                "--seed", str(seed),
                 "--time-to-teleport", "-1",  # Disable vehicle teleportation to keep attack impacts visible
             ]
             if lateral_resolution is not None:
@@ -1150,12 +1250,21 @@ def _safe_launch_simulation(map_name: str, config_path: str, port: int, step_len
     launch_thread = threading.Thread(target=_launch_thread, daemon=True)
     launch_thread.start()
     
-    return {"status": f"SUMO {map_name} launch initiated in background. Please wait a few seconds before starting the simulation."}
+    # Wait for the launch thread to finish (either successful connection or error)
+    # Give it a timeout of 120 seconds
+    launch_thread.join(timeout=120.0)
+    
+    if launch_error:
+        return {"error": f"Failed to launch SUMO {map_name}: {launch_error}"}
+    if traci_connection is None:
+        return {"error": f"Timeout waiting for SUMO {map_name} to launch and connect."}
+        
+    return {"status": f"SUMO {map_name} launched and TraCI connected successfully."}
 
 
 # [BLUE TOOL]
 @mcp.tool("launch_basic_simulation")
-def start_sumo_and_connect(headless: bool = False) -> dict:
+def start_sumo_and_connect(headless: bool = False, seed: int = 42) -> dict:
     """
     Launches SUMO traffic simulator via TraCI.
     Works both locally and in Docker.
@@ -1166,13 +1275,14 @@ def start_sumo_and_connect(headless: bool = False) -> dict:
         port=55000,
         step_length=0.05,
         lateral_resolution=None,
-        headless=headless
+        headless=headless,
+        seed=seed
     )
 
 
 # [BLUE TOOL]
 @mcp.tool("launch_Berlin")
-def launch_berlin_simulation(headless: bool = False) -> dict:
+def launch_berlin_simulation(headless: bool = False, seed: int = 42) -> dict:
     """
     Launches the Berlin SUMO simulation.
     """
@@ -1182,13 +1292,14 @@ def launch_berlin_simulation(headless: bool = False) -> dict:
         port=55000,
         step_length=0.05,
         lateral_resolution=0.1,
-        headless=headless
+        headless=headless,
+        seed=seed
     )
 
 
 # [BLUE TOOL]
 @mcp.tool("launch_Paris")
-def launch_paris_simulation(headless: bool = False) -> dict:
+def launch_paris_simulation(headless: bool = False, seed: int = 42) -> dict:
     """
     Launches the Paris SUMO simulation.
     """
@@ -1198,13 +1309,14 @@ def launch_paris_simulation(headless: bool = False) -> dict:
         port=55001,
         step_length=0.05,
         lateral_resolution=0.1,
-        headless=headless
+        headless=headless,
+        seed=seed
     )
 
 
 # [BLUE TOOL]
 @mcp.tool("launch_Luxembourg")
-def launch_luxembourg_simulation(headless: bool = False) -> dict:
+def launch_luxembourg_simulation(headless: bool = False, seed: int = 42) -> dict:
     """
     Launches the SUMO traffic simulator and establishes a TraCI connection.
     Returns a status message indicating whether the connection was successful.
@@ -1216,7 +1328,8 @@ def launch_luxembourg_simulation(headless: bool = False) -> dict:
         port=55001,
         step_length=0.05,
         lateral_resolution=0.1,
-        headless=headless
+        headless=headless,
+        seed=seed
     )
 
 
@@ -1318,20 +1431,12 @@ def simulate_attack(params: dict | None = None) -> dict:
             return {"error": "No traffic lights found."}
 
         duration = float(params.get('duration', 30)) if params else 30
+        ratio = float(params.get('ratio', 1.0)) if params else 1.0
         start_time = traci.simulation.getTime()
 
-        # Previous single-junction version kept for reference:
-        # target_tls = random.choice(tls_ids)
-        # try:
-        #     original_state = traci.trafficlight.getRedYellowGreenState(target_tls)
-        #     original_phase = traci.trafficlight.getPhase(target_tls)
-        # except Exception as e:
-        #     logger.warning(f"Could not save original TLS state: {e}")
-        #     original_state = None
-        #     original_phase = None
-
-        # New map-wide version: target every traffic light on the map.
-        target_tls_ids = list(tls_ids)
+        # Target a random sample of traffic lights based on the ratio parameter
+        num_target = max(1, int(len(tls_ids) * ratio))
+        target_tls_ids = random.sample(list(tls_ids), num_target)
         original_states = {}
         original_phases = {}
         for target_tls in target_tls_ids:
@@ -1352,9 +1457,9 @@ def simulate_attack(params: dict | None = None) -> dict:
             }
         })
 
-        logger.info(f"🔴 ATTACK STARTED: Traffic Light Tampering on {len(target_tls_ids)} traffic lights for {duration}s (saved original states)")
+        logger.info(f"🔴 ATTACK STARTED: Traffic Light Tampering on {len(target_tls_ids)} traffic lights (ratio={ratio}) for {duration}s (saved original states)")
         return {
-            "status": f"Attack started on {len(target_tls_ids)} traffic lights",
+            "status": f"Attack started on {len(target_tls_ids)} traffic lights (ratio={ratio})",
             "target_count": len(target_tls_ids),
             "targets": target_tls_ids,
             "duration": duration,
@@ -1384,18 +1489,16 @@ def universal_perturbation_attack(params: dict | None = None) -> dict:
         
         start_time = traci.simulation.getTime()
 
-        # Generate universal perturbation δ_u
-        # Collect current vehicle states to compute perturbation
+        # Generate universal perturbation δ_u (cast to plain Python types for JSON compatibility)
+        raw_pos = np.clip(np.random.normal(0, epsilon * scale_position, 2), -epsilon, epsilon)
+        raw_vel = np.clip(np.random.normal(0, epsilon * scale_velocity, 2), -epsilon * 0.5, epsilon * 0.5)
+        raw_head = np.clip(np.random.normal(0, epsilon * 0.2, 1)[0], -0.1, 0.1)
+
         perturbation_components = {
-            'position': np.random.normal(0, epsilon * scale_position, 2),  # [dx, dy]
-            'velocity': np.random.normal(0, epsilon * scale_velocity, 2),  # [dvx, dvy]
-            'heading': np.random.normal(0, epsilon * 0.2, 1)[0],  # Δ heading (radians)
+            'position': [float(x) for x in raw_pos],  # [dx, dy]
+            'velocity': [float(x) for x in raw_vel],  # [dvx, dvy]
+            'heading': float(raw_head),  # Δ heading (radians)
         }
-        
-        # Clip to epsilon ball
-        perturbation_components['position'] = np.clip(perturbation_components['position'], -epsilon, epsilon)
-        perturbation_components['velocity'] = np.clip(perturbation_components['velocity'], -epsilon * 0.5, epsilon * 0.5)
-        perturbation_components['heading'] = np.clip(perturbation_components['heading'], -0.1, 0.1)
 
         # Store original states for all vehicles (especially max speed for restoration)
         original_vehicle_states = {}
@@ -1486,72 +1589,66 @@ def targeted_adversarial_sensor_spoofing_attack(params: dict | None = None) -> d
         
         start_time = traci.simulation.getTime()
         
-        # Collect vehicle information to find strategic positions
-        vehicle_info = []
-        
+        # Collect vehicle info and sort by speed descending to target fast-moving vehicles
+        vehicles_sorted = []
         logger.info(f"[ATTACK] Total vehicles: {len(vehicle_ids)}")
         
         for veh_id in vehicle_ids:
             try:
-                pos = traci.vehicle.getPosition(veh_id)
+                speed = traci.vehicle.getSpeed(veh_id)
                 lane_id = traci.vehicle.getLaneID(veh_id)
-                route_id = traci.vehicle.getRouteID(veh_id)
+                route_id = resolve_valid_route_id(veh_id, traci.vehicle.getRouteID(veh_id))
                 lane_pos = traci.vehicle.getLanePosition(veh_id)
-                vehicle_info.append({
+                vehicles_sorted.append({
                     'veh_id': veh_id,
-                    'pos': pos,
+                    'speed': speed,
                     'lane_id': lane_id,
                     'route_id': route_id,
                     'lane_pos': lane_pos
                 })
-            except Exception as e:
+            except Exception:
                 pass
         
-        if not vehicle_info:
+        if not vehicles_sorted:
             return {"error": "Could not determine vehicle positions for obstacle placement."}
+            
+        vehicles_sorted = sorted(vehicles_sorted, key=lambda x: x['speed'], reverse=True)
         
-        logger.info(f"[ATTACK] Collected info for {len(vehicle_info)} vehicles")
+        # Select target vehicles on unique lanes
+        selected_targets = []
+        used_lanes = set()
+        for v in vehicles_sorted:
+            if v['lane_id'] not in used_lanes:
+                selected_targets.append(v)
+                used_lanes.add(v['lane_id'])
+                if len(selected_targets) == num_obstacles:
+                    break
         
-        # Simple strategy: Create obstacles on lanes with most vehicles
-        lanes_with_vehicles = {}
-        for vinfo in vehicle_info:
-            lane_id = vinfo['lane_id']
-            if lane_id not in lanes_with_vehicles:
-                lanes_with_vehicles[lane_id] = []
-            lanes_with_vehicles[lane_id].append(vinfo['lane_pos'])
+        # Fallback if fewer unique lanes than num_obstacles
+        if len(selected_targets) < num_obstacles:
+            for v in vehicles_sorted:
+                if len(selected_targets) == num_obstacles:
+                    break
+                if v not in selected_targets:
+                    selected_targets.append(v)
         
-        logger.info(f"[ATTACK] Lanes with vehicles: {list(lanes_with_vehicles.keys())}")
-        
-        # Sort lanes by traffic density
-        sorted_lanes = sorted(
-            lanes_with_vehicles.items(),
-            key=lambda x: len(x[1]),
-            reverse=True
-        )[:num_obstacles]
+        logger.info(f"[ATTACK] Selected {len(selected_targets)} targets on unique lanes for obstacle placement")
         
         obstacle_ids = []
         created_count = 0
         
-        for obs_idx, (lane_id, positions_on_lane) in enumerate(sorted_lanes):
+        for obs_idx, target in enumerate(selected_targets):
             obstacle_id = f"obstacle_{int(start_time * 1000)}_{obs_idx}"
+            lane_id = target['lane_id']
+            target_route = target['route_id']
+            lane_pos = target['lane_pos']
             
             try:
-                # Find a route that has this lane
-                target_route = None
-                for vinfo in vehicle_info:
-                    if vinfo['lane_id'] == lane_id:
-                        target_route = vinfo['route_id']
-                        break
-                
-                if not target_route:
-                    logger.warning(f"  ⚠ Could not find route for lane {lane_id}")
-                    continue
-                
                 logger.info(f"[OBSTACLE {obs_idx}] Creating on lane {lane_id}, route {target_route}")
                 
-                # Place obstacle ahead of furthest vehicle on this lane
-                furthest_pos = max(positions_on_lane) if positions_on_lane else 50.0
-                obstacle_pos = furthest_pos + 80.0
+                # Place obstacle ahead of target vehicle
+                lane_length = traci.lane.getLength(lane_id)
+                obstacle_pos = min(lane_pos + 25.0, lane_length - 5.0)
                 
                 logger.info(f"  Creating vehicle {obstacle_id}")
                 vehicle_type = resolve_dynamic_vehicle_type()
@@ -1568,27 +1665,19 @@ def targeted_adversarial_sensor_spoofing_attack(params: dict | None = None) -> d
                 traci.vehicle.moveTo(obstacle_id, lane_id, obstacle_pos)
                 logger.info(f"  ✓ Moved to lane {lane_id} pos {obstacle_pos:.1f}")
                 
-                # Set speed to 0 - NOT maxSpeed, just current speed
+                # Set speed to 0 - acts as static obstacle
                 traci.vehicle.setSpeed(obstacle_id, 0.0)
                 logger.info(f"  ✓ Speed set to 0")
                 
-                # Set a reasonable maxSpeed (not 0 - that causes error)
+                # Set max speed to 1.0 to avoid crash/errors, color RED
                 traci.vehicle.setMaxSpeed(obstacle_id, 1.0)
-                logger.info(f"  ✓ MaxSpeed set to 1.0 (locked)")
-                
-                # Color: RED
                 traci.vehicle.setColor(obstacle_id, (255, 0, 0))
-                logger.info(f"  ✓ Color set to red")
                 
                 obstacle_ids.append(obstacle_id)
                 created_count += 1
-                
                 logger.info(f"  ✓✓ SUCCESS: Obstacle created")
-            
             except Exception as e:
-                logger.error(f"  ✗✗ Failed to create obstacle: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
+                logger.error(f"  ✗ Failed to create obstacle: {e}")
         
         if created_count == 0:
             return {"error": "Failed to create any obstacles for attack."}
@@ -1609,7 +1698,6 @@ def targeted_adversarial_sensor_spoofing_attack(params: dict | None = None) -> d
         logger.info(f"✓ ATTACK STARTED: Adversarial Sensor Spoofing")
         logger.info(f"  - Obstacles created: {created_count}")
         logger.info(f"  - Duration: {duration}s")
-        logger.info(f"  - Vehicles will detect and react naturally")
         logger.info(f"  - Target vehicles: {len(vehicle_ids)}")
         
         return {
@@ -1659,26 +1747,60 @@ def simulate_sybil_attack(params: dict | None = None) -> dict:
         attacker_type = traci.vehicle.getTypeID(attacker_id)
         start_time = traci.simulation.getTime()
 
-        # Create Sybil vehicles immediately at random routes across the map
-        created_sybils = []
-        routes = list(traci.route.getIDList())
+        # Map routes to starting edges to ensure unique launch lanes
+        active_vehs = traci.vehicle.getIDList()
+        active_routes = set()
+        for v in active_vehs:
+            try:
+                r = traci.vehicle.getRouteID(v)
+                if r:
+                    active_routes.add(r)
+            except:
+                pass
+        routes = list(active_routes)
+        if not routes:
+            routes = list(traci.route.getIDList())
         if not routes:
             return {"error": "No routes available in the simulation."}
 
-        for i in range(num_sybil_nodes):
+        edge_to_routes = {}
+        for r in routes:
+            try:
+                edges = traci.route.getEdges(r)
+                if edges:
+                    start_edge = edges[0]
+                    if start_edge not in edge_to_routes:
+                        edge_to_routes[start_edge] = []
+                    edge_to_routes[start_edge].append(r)
+            except Exception:
+                pass
+
+        if not edge_to_routes:
+            return {"error": "Could not determine starting edges for routes."}
+
+        # Sample unique starting edges to distribute Sybils geographically
+        available_edges = list(edge_to_routes.keys())
+        if len(available_edges) >= num_sybil_nodes:
+            selected_edges = random.sample(available_edges, num_sybil_nodes)
+        else:
+            selected_edges = random.choices(available_edges, k=num_sybil_nodes)
+
+        created_sybils = []
+        for i, edge in enumerate(selected_edges):
             sybil_id = f"sybil_{i}_{int(time.time() * 1000) % 10000}"
-            route = random.choice(routes)
+            route = random.choice(edge_to_routes[edge])
             try:
                 traci.vehicle.add(sybil_id, routeID=route, typeID=attacker_type)
                 traci.vehicle.setColor(sybil_id, (255, 0, 0))  # Red = malicious
                 
-                # Lock Sybil speeds to highly disruptive values: 2.0 m/s (crawling) or 25.0 m/s (speeding)
-                target_speed = random.choice([2.0, 25.0])
+                # Crawling speed (1.0 to 3.0 m/s) and blocked lane changes
+                target_speed = random.uniform(1.0, 3.0)
                 traci.vehicle.setSpeed(sybil_id, target_speed)
+                traci.vehicle.setLaneChangeMode(sybil_id, 0)
                 
                 created_sybils.append(sybil_id)
             except Exception as e:
-                logger.warning(f"Failed to spawn Sybil vehicle {sybil_id}: {e}")
+                logger.warning(f"Failed to spawn Sybil vehicle {sybil_id} on edge {edge}: {e}")
 
         active_attacks.append({
             'type': 'sybil',
@@ -1718,31 +1840,65 @@ def simulate_fake_safety_alert(params: dict | None = None) -> dict:
 
         start_time = traci.simulation.getTime()
         obstacles = []
-        vehicle_ids_list = list(vehicle_ids)
-
-        # Spawn obstacles ahead of up to 'count' random vehicles
-        num_targets = min(count, len(vehicle_ids_list))
-        targets = random.sample(vehicle_ids_list, num_targets)
-
-        for idx, target_id in enumerate(targets):
+        
+        # Collect vehicle information and filter to unique lanes
+        vehicle_lanes = []
+        for veh_id in vehicle_ids:
             try:
-                lane_id = traci.vehicle.getLaneID(target_id)
-                position = traci.vehicle.getLanePosition(target_id)
-                route_id = resolve_valid_route_id(target_id, traci.vehicle.getRouteID(target_id))
-                fake_vehicle_id = f"fake_obstacle_{int(time.time() * 1000) % 10000}_{idx}"
+                lane_id = traci.vehicle.getLaneID(veh_id)
+                pos = traci.vehicle.getLanePosition(veh_id)
+                route_id = resolve_valid_route_id(veh_id, traci.vehicle.getRouteID(veh_id))
+                vehicle_lanes.append({
+                    'veh_id': veh_id,
+                    'lane_id': lane_id,
+                    'position': pos,
+                    'route_id': route_id
+                })
+            except Exception:
+                pass
+        
+        random.shuffle(vehicle_lanes)
+        selected_targets = []
+        used_lanes = set()
+        for v in vehicle_lanes:
+            if v['lane_id'] not in used_lanes:
+                selected_targets.append(v)
+                used_lanes.add(v['lane_id'])
+                if len(selected_targets) == count:
+                    break
+        
+        # Fallback if fewer unique lanes than count
+        if len(selected_targets) < count:
+            for v in vehicle_lanes:
+                if len(selected_targets) == count:
+                    break
+                if v not in selected_targets:
+                    selected_targets.append(v)
+
+        for idx, target in enumerate(selected_targets):
+            try:
+                target_id = target['veh_id']
+                lane_id = target['lane_id']
+                position = target['position']
+                route_id = target['route_id']
                 
-                # Try to spawn immediately
+                # Place obstacle ahead of target vehicle
+                lane_length = traci.lane.getLength(lane_id)
+                safe_spawn_pos = min(position + 25.0, lane_length - 5.0)
+                
+                fake_vehicle_id = f"fake_obstacle_{int(time.time() * 1000) % 10000}_{idx}"
                 vehicle_type = resolve_dynamic_vehicle_type()
+                
                 traci.vehicle.add(vehID=fake_vehicle_id, routeID=route_id, typeID=vehicle_type)
-                traci.vehicle.moveTo(fake_vehicle_id, lane_id, position)
+                traci.vehicle.moveTo(fake_vehicle_id, lane_id, safe_spawn_pos)
                 traci.vehicle.setSpeed(fake_vehicle_id, 0.0)
-                traci.vehicle.setColor(fake_vehicle_id, (255, 255, 0))
+                traci.vehicle.setColor(fake_vehicle_id, (255, 255, 0))  # Yellow
 
                 obstacles.append({
                     'vehicle_id': fake_vehicle_id,
                     'route_id': route_id,
                     'lane_id': lane_id,
-                    'position': position
+                    'position': safe_spawn_pos
                 })
             except Exception as e:
                 logger.warning(f"Could not spawn fake obstacle for {target_id}: {e}")
@@ -1787,24 +1943,61 @@ def simulate_fake_emergency_vehicle(params: dict | None = None) -> dict:
 
         start_time = traci.simulation.getTime()
         created_evs = []
-        vehicle_ids_list = list(vehicle_ids)
-
-        num_targets = min(count, len(vehicle_ids_list))
-        targets = random.sample(vehicle_ids_list, num_targets)
-
-        for idx, target_id in enumerate(targets):
+        
+        # Collect vehicle information and filter to unique lanes
+        vehicle_lanes = []
+        for veh_id in vehicle_ids:
             try:
-                route_id = resolve_valid_route_id(target_id, traci.vehicle.getRouteID(target_id))
-                lane_id = traci.vehicle.getLaneID(target_id)
-                position = traci.vehicle.getLanePosition(target_id)
+                lane_id = traci.vehicle.getLaneID(veh_id)
+                pos = traci.vehicle.getLanePosition(veh_id)
+                route_id = resolve_valid_route_id(veh_id, traci.vehicle.getRouteID(veh_id))
+                vehicle_lanes.append({
+                    'veh_id': veh_id,
+                    'lane_id': lane_id,
+                    'position': pos,
+                    'route_id': route_id
+                })
+            except Exception:
+                pass
+        
+        random.shuffle(vehicle_lanes)
+        selected_targets = []
+        used_lanes = set()
+        for v in vehicle_lanes:
+            if v['lane_id'] not in used_lanes:
+                selected_targets.append(v)
+                used_lanes.add(v['lane_id'])
+                if len(selected_targets) == count:
+                    break
+        
+        # Fallback if fewer unique lanes than count
+        if len(selected_targets) < count:
+            for v in vehicle_lanes:
+                if len(selected_targets) == count:
+                    break
+                if v not in selected_targets:
+                    selected_targets.append(v)
+
+        for idx, target in enumerate(selected_targets):
+            try:
+                target_id = target['veh_id']
+                route_id = target['route_id']
+                lane_id = target['lane_id']
+                position = target['position']
                 emergency_id = f"fake_EV_{int(time.time() * 1000) % 10000}_{idx}"
+
+                # Spawn behind the target vehicle to simulate approaching vehicle
+                spawn_pos = max(0.0, position - 25.0)
 
                 vehicle_type = resolve_dynamic_vehicle_type()
                 traci.vehicle.add(emergency_id, routeID=route_id, typeID=vehicle_type)
                 traci.vehicle.setColor(emergency_id, (0, 0, 255))  # Blue
-                traci.vehicle.moveTo(emergency_id, lane_id, position + 10.0)
+                traci.vehicle.moveTo(emergency_id, lane_id, spawn_pos)
+                
+                # Fast speed
                 traci.vehicle.setSpeed(emergency_id, speed)
-                traci.vehicle.setSpeedMode(emergency_id, 0b00000)  # Manual speed control
+                # Keep anticollision speed mode (31)
+                traci.vehicle.setSpeedMode(emergency_id, 31)
 
                 created_evs.append(emergency_id)
             except Exception as e:
@@ -2186,9 +2379,17 @@ def load_baseline_reference(params: dict | None = None) -> dict:
     global baseline_reference, baseline_reference_map
     params = params or {}
     map_name = _normalize_map_name(str(params.get("map_name", "paris")))
+    seed_val = params.get("seed")
+    if seed_val is not None:
+        try:
+            seed_val = int(seed_val)
+        except:
+            seed_val = current_simulation_seed
+    else:
+        seed_val = current_simulation_seed
 
     try:
-        loaded, error = _load_baseline_into_cache(map_name)
+        loaded, error = _load_baseline_into_cache(map_name, seed=seed_val)
         if error:
             return {
                 "error": error,
@@ -2196,11 +2397,18 @@ def load_baseline_reference(params: dict | None = None) -> dict:
             }
 
         baseline_reference = loaded
-        baseline_reference_map = map_name
-        logger.info(f"✓ Baseline loaded from cache: {map_name} ({len(baseline_reference)} points)")
+        if map_name == "paris":
+            baseline_reference_map = f"paris_seed_{seed_val}"
+        elif map_name == "berlin":
+            baseline_reference_map = f"berlin_seed_{seed_val}"
+        elif map_name in ["luxembourg", "lux"]:
+            baseline_reference_map = f"lux_seed_{seed_val}"
+        else:
+            baseline_reference_map = map_name
+        logger.info(f"✓ Baseline loaded from cache: {baseline_reference_map} ({len(baseline_reference)} points)")
         return {
             "status": "loaded",
-            "map_name": map_name,
+            "map_name": baseline_reference_map,
             "count": len(baseline_reference),
             "first_time": baseline_reference[0].get("simulation_time") if baseline_reference else None,
             "last_time": baseline_reference[-1].get("simulation_time") if baseline_reference else None,
@@ -2215,6 +2423,14 @@ def load_baseline_reference(params: dict | None = None) -> dict:
 def save_current_as_baseline(params: dict | None = None) -> dict:
     params = params or {}
     map_name = _normalize_map_name(str(params.get("map_name", "custom")))
+    seed_val = params.get("seed")
+    if seed_val is not None:
+        try:
+            seed_val = int(seed_val)
+        except:
+            seed_val = current_simulation_seed
+    else:
+        seed_val = current_simulation_seed
     
     with metrics_lock:
         history = list(realtime_metrics)
@@ -2222,15 +2438,16 @@ def save_current_as_baseline(params: dict | None = None) -> dict:
     if not history:
         return {"error": "No realtime metrics to save. Run a simulation first."}
     
-    baseline_file = _baseline_file_path(map_name)
+    baseline_file = _baseline_file_path(map_name, seed=seed_val)
     try:
         with open(baseline_file, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2, default=str)
-        baseline_cache[map_name] = history
-        logger.info(f"✓ Baseline saved: {map_name} ({len(history)} points)")
+        cache_key = f"paris_seed_{seed_val}" if map_name == "paris" else map_name
+        baseline_cache[cache_key] = history
+        logger.info(f"✓ Baseline saved: {cache_key} ({len(history)} points)")
         return {
             "status": "saved",
-            "map_name": map_name,
+            "map_name": cache_key,
             "count": len(history),
             "file": baseline_file,
             "source": "disk_and_memory_cache",

@@ -77,7 +77,7 @@ def main():
     time.sleep(1)
     
     # 2. Start sumo
-    map_path_paris = "paris/map.sumocfg"
+    map_path_paris = "maps/paris/map.sumocfg"
     cmd = [
         "sumo",  # command-line version
         "-c", map_path_paris,

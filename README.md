@@ -93,9 +93,9 @@ python post_treatment/table/analyze_campaign.py          # Paris
 ### 2. Regenerate Curve Plots & Results Table
 Generates the ROC-PR curves and `detailed_table_results.json` files for paper publication:
 ```bash
-python post_treatment/figure/generate_berlin_figure9_and_table.py
-python post_treatment/figure/generate_lux_figure9_and_table.py
-python post_treatment/figure/generate_figure9_and_table.py       # Paris
+python post_treatment/figure/generate_berlin_figure_and_table.py
+python post_treatment/figure/generate_lux_figure_and_table.py
+python post_treatment/figure/generate_figure_and_table.py       # Paris
 ```
 
 ---

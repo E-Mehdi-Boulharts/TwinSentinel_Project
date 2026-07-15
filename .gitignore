@@ -23,14 +23,6 @@ sumo_paris.log
 
 # Temporary outputs
 *.xlsx
-baselines/baseline_*.json
-!baselines/baseline_*_seed_1.json
-!baselines/baseline_*_seed_2.json
 
 # Personal reports
 report/
-
-# Simulation runs (only commit L3 seed 1 and seed 2 of each attack)
-runs/*
-!runs/*_L3_seed_1.json
-!runs/*_L3_seed_2.json

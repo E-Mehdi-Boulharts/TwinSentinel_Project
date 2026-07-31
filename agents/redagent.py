@@ -25,6 +25,9 @@ class RedAgent:
             "traffic_light_tampering_attack",
             "universal_perturbation_attack",
             "targeted_adversarial_sensor_spoofing",
+            "hopskipjump_attack",
+            "poison_baseline_backdoor_attack",
+            "poison_baseline_clean_label_attack",
             "sybil_attack",
             "fake_safety_message_attack",
             "fake_emergency_vehicle_broadcast"

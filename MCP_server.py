@@ -21,6 +21,10 @@ import openpyxl
 from collections import deque
 import json
 import numpy as np
+from ATTACKS.threat_models import VehicleSafetyModel
+from ATTACKS.hopskipjump import HopSkipJumpAttack
+from ATTACKS.backdoor_attack import create_backdoor_attack
+from ATTACKS.clean_label_feature_collision import create_clean_label_feature_collision_attack
 
 # =============================
 #       GLOBAL VARIABLES
@@ -639,6 +643,20 @@ def simulation_loop():
                             
                             except Exception as restore_error:
                                 logger.warning(f"Could not fully remove obstacles: {restore_error}")
+                        elif attack['type'] == 'hopskipjump':
+                            # Restore targeted vehicles to normal behavior
+                            try:
+                                original_states = attack['data'].get('original_vehicle_states', {})
+                                for veh_id, state in original_states.items():
+                                    if veh_id in traci.vehicle.getIDList():
+                                        traci.vehicle.setMaxSpeed(veh_id, state.get('max_speed', 50.0))
+                                        traci.vehicle.setSpeed(veh_id, -1)  # Hand back control to SUMO
+                                        traci.vehicle.setLaneChangeMode(veh_id, state.get('lane_change_mode', 1621))
+                                        color = state.get('color')
+                                        traci.vehicle.setColor(veh_id, color if color is not None else (255, 255, 255))
+                                logger.info(f"✓ ATTACK ENDED: HopSkipJump - restored {len(original_states)} targeted vehicles")
+                            except Exception as restore_error:
+                                logger.warning(f"Could not fully restore behaviors after HopSkipJump: {restore_error}")
                     except Exception as e:
                         logger.warning(f"Attack cleanup error: {e}")
                     active_attacks.remove(attack)
@@ -815,7 +833,42 @@ def simulation_loop():
                             
                             except Exception as e:
                                 pass  # Silently ignore errors
-                                
+
+                        elif attack['type'] == 'hopskipjump':
+                            # Apply the minimal, decision-boundary spoof found by the
+                            # label-only search to ONLY the targeted vehicles (small,
+                            # surgical footprint -- contrast with universal_perturbation's
+                            # random fleet-wide broadcast).
+                            try:
+                                target_ids = attack['data'].get('target_vehicle_ids', [])
+                                original_states = attack['data'].setdefault('original_vehicle_states', {})
+                                pert = attack['data'].get('perturbation', {})
+                                pos_pert = pert.get('position', [0.0, 0.0])
+                                spoof_magnitude = math.sqrt(pos_pert[0] ** 2 + pos_pert[1] ** 2)
+
+                                for veh_id in target_ids:
+                                    if veh_id not in traci.vehicle.getIDList():
+                                        continue
+                                    try:
+                                        if veh_id not in original_states:
+                                            original_states[veh_id] = {
+                                                'max_speed': traci.vehicle.getMaxSpeed(veh_id),
+                                                'color': traci.vehicle.getColor(veh_id),
+                                                'lane_change_mode': traci.vehicle.getLaneChangeMode(veh_id),
+                                            }
+                                        # Minimal spoofed leader-distance/TTC reading is just
+                                        # enough to flip the onboard safety decision -- trigger
+                                        # a light, stealthy phantom-brake rather than a hard stop.
+                                        speed = traci.vehicle.getSpeed(veh_id)
+                                        decel_factor = min(0.3, spoof_magnitude * 0.1)
+                                        target_speed = max(2.0, speed * (1.0 - decel_factor))
+                                        traci.vehicle.slowDown(veh_id, target_speed, 1.5)
+                                        traci.vehicle.setColor(veh_id, (160, 32, 240))  # Purple: decision-based spoof
+                                    except Exception as e:
+                                        logger.debug(f"Could not apply HopSkipJump spoof to {veh_id}: {e}")
+                            except Exception as e:
+                                logger.warning(f"HopSkipJump application error: {e}")
+
                     except Exception as e:
                         logger.warning(f"Attack application error: {e}")
 
@@ -1711,6 +1764,190 @@ def targeted_adversarial_sensor_spoofing_attack(params: dict | None = None) -> d
     
     except Exception as e:
         logger.error(f"Adversarial attack error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
+
+
+@mcp.tool("hopskipjump_attack", description="Decision-based black-box HopSkipJump attack: with NO access to the onboard safety model's weights or confidence scores (only the observable safe/unsafe decision), iteratively searches for the smallest GPS/TTC spoof that flips a target vehicle's decision, then applies that minimal spoof to trigger stealthy phantom braking. Based on Chen, Jordan & Wagner (IEEE S&P 2020).")
+def hopskipjump_attack(params: dict | None = None) -> dict:
+    """Launch a HopSkipJump decision-based black-box attack.
+
+    Unlike universal_perturbation_attack (white-box, gradient-based, broadcast
+    to the whole fleet), this attack only ever observes a binary safe/unsafe
+    decision from the target's onboard safety model, and searches for the
+    MINIMAL spoof that still flips that decision -- a smaller, stealthier,
+    more targeted footprint than a random universal perturbation.
+
+    Parameters:
+        duration (float): Attack duration in seconds (default: 30)
+        num_targets (int): Number of vehicles to target (default: 3)
+        max_iterations (int): Boundary-search iterations (default: 15)
+    """
+    global traci_connection, active_attacks, logger
+
+    try:
+        if traci_connection is None:
+            return {"error": "TraCI connection is not active. Start the simulation first."}
+
+        vehicle_ids = list(traci.vehicle.getIDList())
+        if not vehicle_ids:
+            return {"error": "No vehicles in simulation. Cannot apply attack."}
+
+        params = params or {}
+        duration = float(params.get('duration', 30))
+        num_targets = int(params.get('num_targets', 3))
+        max_iterations = int(params.get('max_iterations', 15))
+
+        start_time = traci.simulation.getTime()
+
+        # Run the decision-based (label-only) black-box search against the
+        # onboard safety model -- no gradients, no confidence scores, only
+        # the binary safe/unsafe decision at each probe.
+        safety_model = VehicleSafetyModel()
+
+        def decision_oracle(state: np.ndarray) -> int:
+            confidence = safety_model.simple_linear_classifier(state)
+            return 0 if confidence >= 0.5 else 1  # 0=safe(benign), 1=unsafe(adversarial)
+
+        # Representative "safe cruising" state: [speed, accel, ttc, road_type, weather]
+        # (moderate speed, large time-to-collision -- comfortably on the "safe" side)
+        benign_state = np.array([5.0, 0.0, 10.0, 0.0, 0.0])
+
+        attack_engine = HopSkipJumpAttack(max_iterations=max_iterations)
+        try:
+            delta = attack_engine.attack(benign_state, decision_oracle)
+        except RuntimeError as search_error:
+            return {"error": f"HopSkipJump boundary search failed: {search_error}"}
+
+        # Map the found minimal perturbation onto the same position/velocity
+        # channel used by universal_perturbation -- but here the magnitude is
+        # the MINIMAL spoof the decision-only search converged on, not a
+        # random sample.
+        perturbation_components = {
+            'position': [float(delta[2]) * 0.5, 0.0],  # driven by the TTC component
+            'velocity': [float(delta[0]) * 0.2, 0.0],  # driven by the speed component
+            'heading': 0.0,
+        }
+
+        targets = vehicle_ids[:max(1, num_targets)]
+
+        active_attacks.append({
+            'type': 'hopskipjump',
+            'start_time': start_time,
+            'duration': duration,
+            'data': {
+                'perturbation': perturbation_components,
+                'target_vehicle_ids': targets,
+                'query_count': attack_engine.query_count,
+                'perturbation_norm': float(np.linalg.norm(delta)),
+            }
+        })
+
+        logger.info(f"🟣 ATTACK STARTED: HopSkipJump (decision-only black-box) on {len(targets)} targeted vehicles")
+        logger.info(f"   Minimal spoof found in {attack_engine.query_count} label-only queries | ||delta||={np.linalg.norm(delta):.4f}")
+
+        return {
+            "status": f"HopSkipJump attack started on {len(targets)} targeted vehicles",
+            "target_vehicle_ids": targets,
+            "duration": duration,
+            "queries_used": attack_engine.query_count,
+            "perturbation_norm": float(np.linalg.norm(delta)),
+            "perturbation": perturbation_components,
+            "note": "Decision-only black-box search: no model weights, gradients, or confidence scores were used.",
+        }
+
+    except Exception as e:
+        logger.error(f"HopSkipJump attack error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
+
+
+@mcp.tool("poison_baseline_backdoor_attack", description="Backdoor Attack (poisoning): plants ONE specific KPI trigger pattern into a fraction of a saved baseline's points, so a real future attack matching that exact pattern is scored as normal by the Mahalanobis-distance detector -- while every other attack type stays fully detectable. Writes a poisoned COPY of the baseline; the original file is untouched.")
+def poison_baseline_backdoor_attack(params: dict | None = None) -> dict:
+    """Poison a saved baseline with a hidden trigger pattern.
+
+    Parameters:
+        map_name (str): baseline map to poison, e.g. 'paris', 'berlin', 'luxembourg' (default: current map)
+        seed (int): baseline seed to poison (default: current simulation seed)
+        fraction_poisoned (float): fraction of baseline points to overwrite with the trigger (default: 0.15)
+        trigger_pattern (dict): optional custom {stopped_ratio, avg_speed, emergency_breaking,
+            fuel_consumption, collision} signature; defaults to a moderate phantom-congestion pattern
+    """
+    global logger
+    try:
+        params = params or {}
+        map_name = str(params.get('map_name', current_map_name))
+        seed = params.get('seed', current_simulation_seed)
+        fraction_poisoned = float(params.get('fraction_poisoned', 0.15))
+        trigger_pattern = params.get('trigger_pattern')
+
+        history, err = _load_baseline_into_cache(map_name, seed=seed)
+        if err:
+            return {"error": err}
+
+        attack = create_backdoor_attack(trigger_pattern=trigger_pattern, fraction_poisoned=fraction_poisoned)
+        poisoned_history = attack.poison(history, seed=int(seed) if seed is not None else None)
+
+        norm_map = _normalize_map_name(map_name)
+        out_path = _baseline_file_path(norm_map, seed=seed).replace(".json", "_poisoned_backdoor.json")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(poisoned_history, f, indent=2, default=str)
+
+        logger.info(f"🟠 POISONING: Backdoor Attack wrote {out_path} ({len(attack.poisoned_indices)}/{len(history)} points poisoned)")
+
+        return {
+            "status": f"Backdoor Attack poisoned baseline ({map_name}, seed={seed})",
+            "poisoned_file": out_path,
+            "note": "Original baseline file was NOT modified -- a separate poisoned copy was written for comparison.",
+            **attack.get_statistics(),
+        }
+    except Exception as e:
+        logger.error(f"Backdoor Attack poisoning error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
+
+
+@mcp.tool("poison_baseline_clean_label_attack", description="Clean Label Feature Collision Attack (poisoning): applies a small, bounded shift to EVERY point of a saved baseline -- each point individually still looks like plausible normal traffic, but the whole reference distribution's mean/covariance drifts, quietly loosening the detection threshold for ALL future attacks. Writes a poisoned COPY of the baseline; the original file is untouched.")
+def poison_baseline_clean_label_attack(params: dict | None = None) -> dict:
+    """Poison a saved baseline with a small, bounded, distribution-wide shift.
+
+    Parameters:
+        map_name (str): baseline map to poison, e.g. 'paris', 'berlin', 'luxembourg' (default: current map)
+        seed (int): baseline seed to poison (default: current simulation seed)
+        epsilon (float): shift magnitude, in units of each feature's own std-dev (default: 0.15)
+    """
+    global logger
+    try:
+        params = params or {}
+        map_name = str(params.get('map_name', current_map_name))
+        seed = params.get('seed', current_simulation_seed)
+        epsilon = float(params.get('epsilon', 0.15))
+
+        history, err = _load_baseline_into_cache(map_name, seed=seed)
+        if err:
+            return {"error": err}
+
+        attack = create_clean_label_feature_collision_attack(epsilon=epsilon)
+        poisoned_history = attack.poison(history)
+
+        norm_map = _normalize_map_name(map_name)
+        out_path = _baseline_file_path(norm_map, seed=seed).replace(".json", "_poisoned_clean_label.json")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(poisoned_history, f, indent=2, default=str)
+
+        logger.info(f"🟠 POISONING: Clean Label Feature Collision Attack wrote {out_path} (shift={attack.shift_vector})")
+
+        return {
+            "status": f"Clean Label Feature Collision Attack poisoned baseline ({map_name}, seed={seed})",
+            "poisoned_file": out_path,
+            "note": "Original baseline file was NOT modified -- a separate poisoned copy was written for comparison.",
+            **attack.get_statistics(),
+        }
+    except Exception as e:
+        logger.error(f"Clean Label Feature Collision Attack poisoning error: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return {"error": str(e)}

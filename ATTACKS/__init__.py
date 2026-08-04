@@ -8,9 +8,9 @@ from .sumo_adapter import UniversalPerturbationSUMOAdapter, create_adapter
 from .hopskipjump import HopSkipJumpAttack
 from .backdoor_attack import BackdoorAttack, create_backdoor_attack
 from .clean_label_feature_collision import CleanLabelFeatureCollisionAttack, create_clean_label_feature_collision_attack
+from .knockoff_nets import KnockoffNetsAttack, create_knockoffnets_attack
 # from .badnets import BadNetsAttack
 # from .membership_inference import MembershipInferenceAttack
-# from .copycat_cnn import CopycatCNNAttack
 
 __all__ = [
     "UniversalPerturbationAttack",
@@ -21,7 +21,8 @@ __all__ = [
     "create_backdoor_attack",
     "CleanLabelFeatureCollisionAttack",
     "create_clean_label_feature_collision_attack",
+    "KnockoffNetsAttack",
+    "create_knockoffnets_attack",
     # "BadNetsAttack",
     # "MembershipInferenceAttack",
-    # "CopycatCNNAttack",
 ]

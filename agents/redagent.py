@@ -30,7 +30,8 @@ class RedAgent:
             "poison_baseline_clean_label_attack",
             "sybil_attack",
             "fake_safety_message_attack",
-            "fake_emergency_vehicle_broadcast"
+            "fake_emergency_vehicle_broadcast",
+            "knockoff_nets_extraction_attack"
         ]
 
     def _next_request_id(self) -> int:
@@ -193,9 +194,13 @@ class RedAgent:
         print("  light      - Traffic light tampering attack")
         print("  universal  - Universal perturbation attack")
         print("  adversarial- Targeted adversarial sensor spoofing attack")
+        print("  hopskipjump- HopSkipJump decision-based black-box attack")
+        print("  backdoor   - Backdoor Attack (poisons a saved baseline)")
+        print("  cleanlabel - Clean Label Feature Collision Attack (poisons a saved baseline)")
         print("  sybil      - Sybil attack (fake vehicles)")
         print("  safety     - Fake safety message attack")
         print("  emergency  - Fake emergency vehicle broadcast")
+        print("  extract    - KnockoffNets model extraction attack (no simulation required)")
         print("  exit/quit  - Exit agent")
         print("  note       - Attacks persist only while the simulation is running")
         print()
@@ -218,9 +223,13 @@ class RedAgent:
                     print("   light       -> traffic_light_tampering_attack")
                     print("   universal   -> universal_perturbation_attack")
                     print("   adversarial -> targeted_adversarial_sensor_spoofing")
+                    print("   hopskipjump -> hopskipjump_attack")
+                    print("   backdoor    -> poison_baseline_backdoor_attack")
+                    print("   cleanlabel  -> poison_baseline_clean_label_attack")
                     print("   sybil       -> sybil_attack")
                     print("   safety      -> fake_safety_message_attack")
                     print("   emergency   -> fake_emergency_vehicle_broadcast")
+                    print("   extract     -> knockoff_nets_extraction_attack")
                     print()
                     continue
                 
@@ -249,7 +258,35 @@ class RedAgent:
                         print(f"   ✓ Vehicles will detect via sensors and brake naturally")
                         print(f"   ✓ {result['target_count']} vehicles targeted")
                         print(f"   ✓ Attack duration: {result['duration']}s")
-                
+
+                elif cmd == "hopskipjump":
+                    print("⏳ Executing HopSkipJump decision-based black-box attack...")
+                    result = await self.call_mcp_tool(
+                        "hopskipjump_attack",
+                        {"params": {"duration": 30, "num_targets": 3, "max_iterations": 15}},
+                    )
+
+                elif cmd == "backdoor":
+                    print("⏳ Executing Backdoor Attack (poisons a saved baseline copy)...")
+                    result = await self.call_mcp_tool(
+                        "poison_baseline_backdoor_attack",
+                        {"params": {"fraction_poisoned": 0.15}},
+                    )
+
+                elif cmd == "cleanlabel":
+                    print("⏳ Executing Clean Label Feature Collision Attack (poisons a saved baseline copy)...")
+                    result = await self.call_mcp_tool(
+                        "poison_baseline_clean_label_attack",
+                        {"params": {"epsilon": 0.15}},
+                    )
+
+                elif cmd == "extract":
+                    print("🔓 Executing KnockoffNets model extraction attack (no simulation required)...")
+                    result = await self.call_mcp_tool(
+                        "knockoff_nets_extraction_attack",
+                        {"params": {"target_model": "safety", "query_budget": 500, "strategy": "adaptive"}},
+                    )
+
                 elif cmd == "sybil":
                     print("⏳ Executing Sybil attack...")
                     result = await self.call_mcp_tool("sybil_attack", {"params": {"count": 5, "duration": 30}})

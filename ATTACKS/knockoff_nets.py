@@ -314,6 +314,10 @@ class KnockoffNetsAttack:
         x = np.atleast_2d(np.asarray(x, dtype=np.float64))
         return self._forward(x)
 
+    def sample_query_points(self, n: int) -> np.ndarray:
+        """Public helper for building an external held-out eval set (e.g. for evaluate_fidelity)."""
+        return self._sample_candidates(n)
+
     def get_statistics(self) -> Dict:
         """Get attack statistics and metadata."""
         elapsed = (self.end_time - self.start_time).total_seconds() if self.end_time else 0

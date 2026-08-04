@@ -21,10 +21,11 @@ import openpyxl
 from collections import deque
 import json
 import numpy as np
-from ATTACKS.threat_models import VehicleSafetyModel
+from ATTACKS.threat_models import VehicleSafetyModel, VehicleTrajectoryModel
 from ATTACKS.hopskipjump import HopSkipJumpAttack
 from ATTACKS.backdoor_attack import create_backdoor_attack
 from ATTACKS.clean_label_feature_collision import create_clean_label_feature_collision_attack
+from ATTACKS.knockoff_nets import KnockoffNetsAttack
 
 # =============================
 #       GLOBAL VARIABLES
@@ -137,6 +138,10 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 BASELINE_DIR = os.path.join(current_dir, "baselines")
 if not os.path.exists(BASELINE_DIR):
     os.makedirs(BASELINE_DIR, exist_ok=True)
+
+EXTRACTIONS_DIR = os.path.join(current_dir, "extractions")
+if not os.path.exists(EXTRACTIONS_DIR):
+    os.makedirs(EXTRACTIONS_DIR, exist_ok=True)
 
 # Keep setup simple: inside Docker we connect to remote SUMO, on Windows use local path
 if os.path.exists("/.dockerenv"):
@@ -1948,6 +1953,91 @@ def poison_baseline_clean_label_attack(params: dict | None = None) -> dict:
         }
     except Exception as e:
         logger.error(f"Clean Label Feature Collision Attack poisoning error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
+
+
+# Onboard models exposed for knockoff_nets_extraction_attack: factory + query oracle +
+# a plausible sampling range for each, so the attack can query without knowing the
+# target's real training distribution (this is what makes KnockoffNets black-box).
+_KNOCKOFF_TARGET_MODELS = {
+    "safety": {
+        "model_factory": VehicleSafetyModel,
+        "oracle": lambda model, state: model.simple_linear_classifier(state),
+        "bounds": np.array([[0.0, 30.0], [-5.0, 5.0], [0.0, 20.0], [0.0, 3.0], [0.0, 3.0]]),
+    },
+    "trajectory": {
+        "model_factory": VehicleTrajectoryModel,
+        "oracle": lambda model, state: model.simple_linear_model(state),
+        "bounds": np.array([[0.0, 1000.0], [0.0, 1000.0], [-30.0, 30.0], [-30.0, 30.0], [0.0, 6.2832]]),
+    },
+}
+
+
+@mcp.tool("knockoff_nets_extraction_attack", description="KnockoffNets Model Extraction Attack: black-box, query-only theft of a vehicle ML model's functionality -- spends a query budget of (input, output) probes against the chosen onboard model and trains a local surrogate that mimics its decisions, without ever reading its weights, gradients, or training data. Unlike every other attack in this project, it never touches SUMO/TraCI state -- no vehicle brakes, swerves, or misbehaves -- so it produces NO KPI signature for the detection pipeline; the only observable trace is the query volume/pattern itself. Based on Orekondy, Schiele & Fritz (CVPR 2019).")
+def knockoff_nets_extraction_attack(params: dict | None = None) -> dict:
+    """Steal a target vehicle ML model's functionality via black-box queries.
+
+    Parameters:
+        target_model (str): which onboard model to steal -- 'safety' (VehicleSafetyModel,
+            binary safe/unsafe classifier) or 'trajectory' (VehicleTrajectoryModel,
+            next-position regression) (default: 'safety')
+        query_budget (int): total black-box queries the attacker may spend (default: 500)
+        strategy (str): 'adaptive' (uncertainty/diversity-guided queries, spends the
+            budget near the decision boundary) or 'random' (default: 'adaptive')
+        eval_size (int): held-out points used to track and report extraction fidelity,
+            i.e. agreement with the target's own decisions (default: 200)
+    """
+    global logger
+    try:
+        params = params or {}
+        target_model_name = str(params.get('target_model', 'safety')).strip().lower()
+        query_budget = int(params.get('query_budget', 500))
+        strategy = str(params.get('strategy', 'adaptive')).strip().lower()
+        eval_size = int(params.get('eval_size', 200))
+
+        if target_model_name not in _KNOCKOFF_TARGET_MODELS:
+            return {"error": f"Unknown target_model '{target_model_name}'. Choose from: {list(_KNOCKOFF_TARGET_MODELS.keys())}"}
+        if strategy not in ("adaptive", "random"):
+            return {"error": f"Unknown strategy '{strategy}'. Choose 'adaptive' or 'random'."}
+
+        target_cfg = _KNOCKOFF_TARGET_MODELS[target_model_name]
+        target_model = target_cfg["model_factory"]()
+        oracle_fn = target_cfg["oracle"]
+
+        def oracle(state):
+            return oracle_fn(target_model, state)
+
+        attack = KnockoffNetsAttack(
+            threat_model=target_model,
+            query_budget=query_budget,
+            strategy=strategy,
+            input_bounds=target_cfg["bounds"],
+        )
+        x_eval = attack.sample_query_points(eval_size)
+        attack.extract(oracle, x_eval=x_eval, target_eval_func=oracle)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(
+            EXTRACTIONS_DIR,
+            f"extraction_{target_model_name}_{strategy}_budget{query_budget}_{timestamp}.json",
+        )
+        attack.save_to_file(out_path)
+
+        logger.info(
+            f"🔓 EXTRACTION: KnockoffNets stole '{target_model_name}' model -- "
+            f"fidelity={attack.final_fidelity:.3f}, queries={attack.query_count}, wrote {out_path}"
+        )
+
+        return {
+            "status": f"KnockoffNets extraction complete against '{target_model_name}' model",
+            "note": "No SUMO/TraCI state was modified -- this attack only issued black-box queries and trained a local surrogate.",
+            "stolen_model_file": out_path,
+            **attack.get_statistics(),
+        }
+    except Exception as e:
+        logger.error(f"KnockoffNets extraction error: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return {"error": str(e)}

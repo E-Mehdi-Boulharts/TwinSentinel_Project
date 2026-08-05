@@ -31,7 +31,8 @@ class RedAgent:
             "sybil_attack",
             "fake_safety_message_attack",
             "fake_emergency_vehicle_broadcast",
-            "knockoff_nets_extraction_attack"
+            "knockoff_nets_extraction_attack",
+            "attribute_inference_black_box_attack"
         ]
 
     def _next_request_id(self) -> int:
@@ -201,6 +202,7 @@ class RedAgent:
         print("  safety     - Fake safety message attack")
         print("  emergency  - Fake emergency vehicle broadcast")
         print("  extract    - KnockoffNets model extraction attack (no simulation required)")
+        print("  infer      - Attribute Inference Black-Box attack (infers a vehicle's sensitive attribute, no simulation required)")
         print("  exit/quit  - Exit agent")
         print("  note       - Attacks persist only while the simulation is running")
         print()
@@ -230,6 +232,7 @@ class RedAgent:
                     print("   safety      -> fake_safety_message_attack")
                     print("   emergency   -> fake_emergency_vehicle_broadcast")
                     print("   extract     -> knockoff_nets_extraction_attack")
+                    print("   infer       -> attribute_inference_black_box_attack")
                     print()
                     continue
                 
@@ -285,6 +288,13 @@ class RedAgent:
                     result = await self.call_mcp_tool(
                         "knockoff_nets_extraction_attack",
                         {"params": {"target_model": "safety", "query_budget": 500, "strategy": "adaptive"}},
+                    )
+
+                elif cmd == "infer":
+                    print("🕵️ Executing Attribute Inference Black-Box attack (no simulation required)...")
+                    result = await self.call_mcp_tool(
+                        "attribute_inference_black_box_attack",
+                        {"params": {"target_attribute": "road_type", "aux_size": 3000, "eval_size": 1000}},
                     )
 
                 elif cmd == "sybil":

@@ -26,6 +26,7 @@ from ATTACKS.hopskipjump import HopSkipJumpAttack
 from ATTACKS.backdoor_attack import create_backdoor_attack
 from ATTACKS.clean_label_feature_collision import create_clean_label_feature_collision_attack
 from ATTACKS.knockoff_nets import KnockoffNetsAttack
+from ATTACKS.attribute_inference_black_box import AttributeInferenceBlackBoxAttack
 
 # =============================
 #       GLOBAL VARIABLES
@@ -2038,6 +2039,102 @@ def knockoff_nets_extraction_attack(params: dict | None = None) -> dict:
         }
     except Exception as e:
         logger.error(f"KnockoffNets extraction error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
+
+
+# Sensitive attributes exposed for attribute_inference_black_box_attack: which index
+# within VehicleSafetyModel's input vector each represents and its possible categorical
+# values. The attacker never sees these directly -- it infers them from a real vehicle's
+# other known telemetry plus the model's own safety verdict.
+_ATTRIBUTE_INFERENCE_TARGETS = {
+    "road_type": {"attribute_index": 3, "attribute_values": [0.0, 1.0, 2.0, 3.0]},
+    "weather": {"attribute_index": 4, "attribute_values": [0.0, 1.0, 2.0]},
+}
+
+
+def _sample_safety_states(n: int) -> np.ndarray:
+    """Sample full VehicleSafetyModel states -- [speed, acceleration, ttc, road_type,
+    weather] -- for the attacker's own auxiliary/eval sets. Continuous features are
+    drawn from plausible bounds, categorical features (road_type, weather) from their
+    possible values; entirely target-independent, exactly like the sampling in
+    knockoff_nets_extraction_attack."""
+    speed = np.random.uniform(0.0, 30.0, n)
+    accel = np.random.uniform(-5.0, 5.0, n)
+    ttc = np.random.uniform(0.0, 20.0, n)
+    road_type = np.random.choice([0.0, 1.0, 2.0, 3.0], size=n)
+    weather = np.random.choice([0.0, 1.0, 2.0], size=n)
+    return np.stack([speed, accel, ttc, road_type, weather], axis=1)
+
+
+@mcp.tool("attribute_inference_black_box_attack", description="Attribute Inference Black-Box Attack: black-box PRIVACY attack that infers one sensitive input feature (road_type or weather) of a real vehicle's safety-model state from its known telemetry plus the model's own safety verdict, without ever reading the model's weights or gradients. Complements knockoff_nets_extraction_attack -- that attack steals the model's FUNCTION for offline reuse, this one steals a specific vehicle's PRIVATE DATA. Like knockoff_nets_extraction_attack, it never touches SUMO/TraCI state, so it produces NO KPI signature; the only observable trace is query volume/pattern. Based on Fredrikson, Jha & Ristenpart (CCS 2015) / ART's AttributeInferenceBlackBox.")
+def attribute_inference_black_box_attack(params: dict | None = None) -> dict:
+    """Infer a sensitive attribute of VehicleSafetyModel via a black-box attack model.
+
+    Parameters:
+        target_attribute (str): which sensitive feature to infer -- 'road_type' or
+            'weather' (default: 'road_type')
+        aux_size (int): auxiliary (attacker-owned, target-independent) samples used to
+            train the attack model (default: 3000)
+        eval_size (int): held-out samples used to measure inference accuracy against
+            ground truth, compared to a majority-class baseline (default: 1000)
+        train_epochs (int): training epochs for the attack model (default: 2000)
+        learning_rate (float): gradient descent step size for the attack model (default: 0.5)
+    """
+    global logger
+    try:
+        params = params or {}
+        target_attribute = str(params.get('target_attribute', 'road_type')).strip().lower()
+        aux_size = int(params.get('aux_size', 3000))
+        eval_size = int(params.get('eval_size', 1000))
+        train_epochs = int(params.get('train_epochs', 2000))
+        learning_rate = float(params.get('learning_rate', 0.5))
+
+        if target_attribute not in _ATTRIBUTE_INFERENCE_TARGETS:
+            return {"error": f"Unknown target_attribute '{target_attribute}'. Choose from: {list(_ATTRIBUTE_INFERENCE_TARGETS.keys())}"}
+
+        target_cfg = _ATTRIBUTE_INFERENCE_TARGETS[target_attribute]
+        safety_model = VehicleSafetyModel()
+
+        def oracle(state):
+            return safety_model.simple_linear_classifier(state)
+
+        attack = AttributeInferenceBlackBoxAttack(
+            threat_model=safety_model,
+            attribute_index=target_cfg["attribute_index"],
+            attribute_values=target_cfg["attribute_values"],
+            train_epochs=train_epochs,
+            learning_rate=learning_rate,
+        )
+
+        aux_states = _sample_safety_states(aux_size)
+        eval_states = _sample_safety_states(eval_size)
+
+        attack.fit(aux_states, oracle)
+        eval_results = attack.evaluate_accuracy(eval_states, oracle)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(
+            EXTRACTIONS_DIR,
+            f"attribute_inference_{target_attribute}_{timestamp}.json",
+        )
+        attack.save_to_file(out_path)
+
+        logger.info(
+            f"🕵️ ATTRIBUTE INFERENCE: recovered '{target_attribute}' -- "
+            f"accuracy={eval_results['accuracy']:.3f} vs baseline={eval_results['baseline_accuracy']:.3f}, wrote {out_path}"
+        )
+
+        return {
+            "status": f"Attribute Inference Black-Box attack complete against '{target_attribute}'",
+            "note": "No SUMO/TraCI state was modified -- this attack only issued black-box queries and trained a local attack model.",
+            "attack_model_file": out_path,
+            **eval_results,
+            **attack.get_statistics(),
+        }
+    except Exception as e:
+        logger.error(f"Attribute Inference Black-Box attack error: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return {"error": str(e)}

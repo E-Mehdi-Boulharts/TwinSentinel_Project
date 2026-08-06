@@ -27,6 +27,7 @@ from ATTACKS.backdoor_attack import create_backdoor_attack
 from ATTACKS.clean_label_feature_collision import create_clean_label_feature_collision_attack
 from ATTACKS.knockoff_nets import KnockoffNetsAttack
 from ATTACKS.attribute_inference_black_box import AttributeInferenceBlackBoxAttack
+from ATTACKS.membership_inference_black_box import MembershipInferenceBlackBoxAttack, MembershipInferenceTargetModel
 
 # =============================
 #       GLOBAL VARIABLES
@@ -2135,6 +2136,95 @@ def attribute_inference_black_box_attack(params: dict | None = None) -> dict:
         }
     except Exception as e:
         logger.error(f"Attribute Inference Black-Box attack error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
+
+
+def _sample_membership_inference_data(n: int, label_noise: float = 0.15) -> tuple:
+    """Sample (X, y) VANET safety records for membership_inference_black_box_attack --
+    [speed, acceleration, ttc, road_type, weather] -> noisy ground-truth safety label.
+    Label noise gives an unregularized target something to overfit (memorize) rather
+    than perfectly generalize; without it there would be no train/test gap for a
+    membership inference attack to exploit at all."""
+    speed = np.random.uniform(0.0, 30.0, n)
+    accel = np.random.uniform(-5.0, 5.0, n)
+    ttc = np.random.uniform(0.0, 20.0, n)
+    road_type = np.random.choice([0.0, 1.0, 2.0, 3.0], size=n)
+    weather = np.random.choice([0.0, 1.0, 2.0], size=n)
+    X = np.stack([speed, accel, ttc, road_type, weather], axis=1)
+
+    logits = -0.5 * speed + 0.2 * accel + 1.0 * ttc - 0.1 * road_type + 0.3 * weather
+    p = 1.0 / (1.0 + np.exp(-logits))
+    y = (p > 0.5).astype(np.float64)
+    flip = np.random.rand(n) < label_noise
+    y[flip] = 1.0 - y[flip]
+    return X, y
+
+
+@mcp.tool("membership_inference_black_box_attack", description="Membership Inference Black-Box Attack: black-box PRIVACY attack that determines whether a specific vehicle telemetry record was part of a target model's training set, using only its confidence output -- never its weights, gradients, or actual training data. Trains its own small, deliberately unregularized target model (this project's other threat models are fixed formulas with no training process, so nothing a real input could be a 'member' of) plus attacker-owned shadow models to learn the shadow-model methodology (Shokri et al., CCS 2017), then tests it against the real target's real training records vs. fresh held-out ones. Like the other black-box confidentiality attacks here, it never touches SUMO/TraCI state, so it produces NO KPI signature; the only observable trace is query volume/pattern.")
+def membership_inference_black_box_attack(params: dict | None = None) -> dict:
+    """Infer training-set membership against a small, freshly-trained target model.
+
+    Parameters:
+        target_train_size (int): size of the REAL target's own training set -- the
+            attacker is trying to recover which records are in this set (default: 60)
+        target_holdout_size (int): fresh, never-trained-on records used as known
+            non-members to measure attack accuracy against (default: 300)
+        num_shadow_models (int): attacker-trained shadow models used to build the
+            attack's training data (default: 12)
+        shadow_train_size (int): training-set size per shadow model (default: 60)
+        shadow_test_size (int): held-out size per shadow model (default: 200)
+        label_noise (float): label-flip probability in the synthetic VANET safety task,
+            giving the unregularized target something to memorize (default: 0.15)
+    """
+    global logger
+    try:
+        params = params or {}
+        target_train_size = int(params.get('target_train_size', 60))
+        target_holdout_size = int(params.get('target_holdout_size', 300))
+        num_shadow_models = int(params.get('num_shadow_models', 12))
+        shadow_train_size = int(params.get('shadow_train_size', 60))
+        shadow_test_size = int(params.get('shadow_test_size', 200))
+        label_noise = float(params.get('label_noise', 0.15))
+
+        def sample_data(n):
+            return _sample_membership_inference_data(n, label_noise=label_noise)
+
+        X_train_real, y_train_real = sample_data(target_train_size)
+        X_holdout_real, y_holdout_real = sample_data(target_holdout_size)
+
+        target = MembershipInferenceTargetModel()
+        target.fit(X_train_real, y_train_real)
+
+        attack = MembershipInferenceBlackBoxAttack(
+            num_shadow_models=num_shadow_models,
+            shadow_train_size=shadow_train_size,
+            shadow_test_size=shadow_test_size,
+        )
+        attack.fit(sample_data)
+        eval_results = attack.evaluate_against_target(
+            target, X_train_real, y_train_real, X_holdout_real, y_holdout_real
+        )
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(EXTRACTIONS_DIR, f"membership_inference_black_box_{timestamp}.json")
+        attack.save_to_file(out_path)
+
+        logger.info(
+            f"🕵️ MEMBERSHIP INFERENCE: balanced_accuracy={eval_results['balanced_accuracy']:.3f} "
+            f"vs baseline={eval_results['baseline_accuracy']:.3f}, wrote {out_path}"
+        )
+
+        return {
+            "status": "Membership Inference Black-Box attack complete",
+            "note": "No SUMO/TraCI state was modified -- this attack only trained shadow/target models and issued black-box queries.",
+            "attack_model_file": out_path,
+            **eval_results,
+            **attack.get_statistics(),
+        }
+    except Exception as e:
+        logger.error(f"Membership Inference Black-Box attack error: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return {"error": str(e)}

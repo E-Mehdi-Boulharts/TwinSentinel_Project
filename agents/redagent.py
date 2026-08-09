@@ -33,7 +33,8 @@ class RedAgent:
             "fake_emergency_vehicle_broadcast",
             "knockoff_nets_extraction_attack",
             "attribute_inference_black_box_attack",
-            "membership_inference_black_box_attack"
+            "membership_inference_black_box_attack",
+            "miface_model_inversion_attack"
         ]
 
     def _next_request_id(self) -> int:
@@ -205,6 +206,7 @@ class RedAgent:
         print("  extract    - KnockoffNets model extraction attack (no simulation required)")
         print("  infer      - Attribute Inference Black-Box attack (infers a vehicle's sensitive attribute, no simulation required)")
         print("  member     - Membership Inference Black-Box attack (detects if a record was in the training set, no simulation required)")
+        print("  invert     - MIFace model inversion attack (reconstructs a representative safe/unsafe vehicle state, no simulation required)")
         print("  exit/quit  - Exit agent")
         print("  note       - Attacks persist only while the simulation is running")
         print()
@@ -236,6 +238,7 @@ class RedAgent:
                     print("   extract     -> knockoff_nets_extraction_attack")
                     print("   infer       -> attribute_inference_black_box_attack")
                     print("   member      -> membership_inference_black_box_attack")
+                    print("   invert      -> miface_model_inversion_attack")
                     print()
                     continue
                 
@@ -305,6 +308,13 @@ class RedAgent:
                     result = await self.call_mcp_tool(
                         "membership_inference_black_box_attack",
                         {"params": {"target_train_size": 60, "target_holdout_size": 300, "num_shadow_models": 12}},
+                    )
+
+                elif cmd == "invert":
+                    print("Executing MIFace model inversion attack (no simulation required)...")
+                    result = await self.call_mcp_tool(
+                        "miface_model_inversion_attack",
+                        {"params": {"target_classes": [0, 1], "max_iterations": 300}},
                     )
 
                 elif cmd == "sybil":

@@ -11,6 +11,7 @@ from .clean_label_feature_collision import CleanLabelFeatureCollisionAttack, cre
 from .knockoff_nets import KnockoffNetsAttack, create_knockoffnets_attack
 from .attribute_inference_black_box import AttributeInferenceBlackBoxAttack, create_attribute_inference_black_box_attack
 from .membership_inference_black_box import MembershipInferenceBlackBoxAttack, MembershipInferenceTargetModel, create_membership_inference_black_box_attack
+from .miface import MIFaceAttack, create_miface_attack
 # from .badnets import BadNetsAttack
 
 __all__ = [
@@ -29,5 +30,7 @@ __all__ = [
     "MembershipInferenceBlackBoxAttack",
     "MembershipInferenceTargetModel",
     "create_membership_inference_black_box_attack",
+    "MIFaceAttack",
+    "create_miface_attack",
     # "BadNetsAttack",
 ]

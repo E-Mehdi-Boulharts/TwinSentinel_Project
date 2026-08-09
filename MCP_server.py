@@ -28,6 +28,7 @@ from ATTACKS.clean_label_feature_collision import create_clean_label_feature_col
 from ATTACKS.knockoff_nets import KnockoffNetsAttack
 from ATTACKS.attribute_inference_black_box import AttributeInferenceBlackBoxAttack
 from ATTACKS.membership_inference_black_box import MembershipInferenceBlackBoxAttack, MembershipInferenceTargetModel
+from ATTACKS.miface import MIFaceAttack
 
 # =============================
 #       GLOBAL VARIABLES
@@ -2225,6 +2226,61 @@ def membership_inference_black_box_attack(params: dict | None = None) -> dict:
         }
     except Exception as e:
         logger.error(f"Membership Inference Black-Box attack error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
+
+
+@mcp.tool("miface_model_inversion_attack", description="MIFace Model Inversion Attack (Fredrikson et al., 2015): black-box PRIVACY attack that reconstructs a CLASS-REPRESENTATIVE vehicle state -- e.g. what a typical 'safe' or 'unsafe' vehicle looks like to the model -- by hill-climbing on the model's own confidence output via finite-difference gradient estimation, never reading its weights or analytic gradients. Unlike membership_inference_black_box_attack (which tests one specific record), this reconstructs a fresh representative record from scratch, potentially leaking the statistical profile of the model's real training population. Like the other black-box confidentiality attacks here, it never touches SUMO/TraCI state, so it produces NO KPI signature; the only observable trace is query volume/pattern.")
+def miface_model_inversion_attack(params: dict | None = None) -> dict:
+    """Reconstruct class-representative vehicle states for VehicleSafetyModel.
+
+    Parameters:
+        target_classes (list[int]): which classes to reconstruct -- 1 (safe), 0
+            (unsafe), or both (default: [0, 1])
+        max_iterations (int): maximum gradient-ascent steps per class (default: 300)
+        learning_rate (float): normalized-gradient step size (default: 0.5)
+    """
+    global logger
+    try:
+        params = params or {}
+        target_classes = params.get('target_classes', [0, 1])
+        target_classes = [int(c) for c in target_classes]
+        max_iterations = int(params.get('max_iterations', 300))
+        learning_rate = float(params.get('learning_rate', 0.5))
+
+        if not all(c in (0, 1) for c in target_classes):
+            return {"error": f"Unknown target_classes {target_classes}. Choose from: [0, 1]"}
+
+        safety_model = VehicleSafetyModel()
+
+        def oracle(state):
+            return safety_model.simple_linear_classifier(state)
+
+        attack = MIFaceAttack(
+            threat_model=safety_model,
+            max_iterations=max_iterations,
+            learning_rate=learning_rate,
+        )
+        attack.invert_all_classes(oracle, classes=target_classes)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(EXTRACTIONS_DIR, f"miface_{timestamp}.json")
+        attack.save_to_file(out_path)
+
+        logger.info(
+            f"🕵️ MODEL INVERSION: reconstructed classes={target_classes} -- "
+            f"gradient_queries={safety_model.gradient_queries}, wrote {out_path}"
+        )
+
+        return {
+            "status": f"MIFace model inversion complete for classes {target_classes}",
+            "note": "No SUMO/TraCI state was modified -- this attack only issued black-box queries to reconstruct representative states.",
+            "attack_model_file": out_path,
+            **attack.get_statistics(),
+        }
+    except Exception as e:
+        logger.error(f"MIFace model inversion error: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return {"error": str(e)}

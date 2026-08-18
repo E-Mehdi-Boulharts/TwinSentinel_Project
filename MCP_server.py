@@ -29,6 +29,7 @@ from ATTACKS.knockoff_nets import KnockoffNetsAttack
 from ATTACKS.attribute_inference_black_box import AttributeInferenceBlackBoxAttack
 from ATTACKS.membership_inference_black_box import MembershipInferenceBlackBoxAttack, MembershipInferenceTargetModel
 from ATTACKS.miface import MIFaceAttack
+from ATTACKS.database_reconstruction import DatabaseReconstructionAttack, DatabaseTargetModel
 
 # =============================
 #       GLOBAL VARIABLES
@@ -2281,6 +2282,95 @@ def miface_model_inversion_attack(params: dict | None = None) -> dict:
         }
     except Exception as e:
         logger.error(f"MIFace model inversion error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
+
+
+def _sample_database_reconstruction_data(n: int, label_noise: float = 0.1, seed: int | None = None) -> tuple:
+    """Sample (X, y) VANET safety records for database_reconstruction_attack --
+    [speed, acceleration, ttc, road_type, weather] -> noisy ground-truth safety label,
+    matching _sample_membership_inference_data's distribution/task so both privacy
+    attacks target directly comparable synthetic populations."""
+    rng = np.random.default_rng(seed)
+    speed = rng.uniform(0.0, 30.0, n)
+    accel = rng.uniform(-5.0, 5.0, n)
+    ttc = rng.uniform(0.0, 20.0, n)
+    road_type = rng.choice([0.0, 1.0, 2.0, 3.0], size=n)
+    weather = rng.choice([0.0, 1.0, 2.0], size=n)
+    X = np.stack([speed, accel, ttc, road_type, weather], axis=1)
+
+    logits = -0.5 * speed + 0.2 * accel + 1.0 * ttc - 0.1 * road_type + 0.3 * weather
+    p = 1.0 / (1.0 + np.exp(-logits))
+    y = (p > 0.5).astype(np.float64)
+    flip = rng.random(n) < label_noise
+    y[flip] = 1.0 - y[flip]
+    return X, y
+
+
+@mcp.tool("database_reconstruction_attack", description="Database Reconstruction Attack (ART wiki, section 4.4 Reconstruction): a differencing-based PRIVACY attack where an 'informed adversary' who already knows all-but-one row of a target model's real training set -- plus its model class/hyperparameters -- reconstructs the ONE missing row by retraining candidate models on (known_rows + candidate_row) and searching for whichever candidate makes the retrained model's predictions on the known rows most closely match the real target's real predictions on those same rows (queried, never read from weights). Unlike this project's other black-box privacy attacks (attribute_inference/membership_inference/miface), which need no knowledge of the training set at all, this attack assumes a stronger informed-adversary starting point but recovers a specific real record rather than a class-representative synthetic one. Like the others, it never touches SUMO/TraCI state, so it produces NO KPI signature; the only observable trace is the small, fixed-size query burst against the real target's known rows.")
+def database_reconstruction_attack(params: dict | None = None) -> dict:
+    """Reconstruct the one training row withheld from a small logistic-regression VANET safety target.
+
+    Parameters:
+        known_size (int): number of KNOWN training rows the attacker already has --
+            the target is trained on known_size + 1 rows total (default: 39)
+        max_iterations (int): maximum gradient-descent steps per candidate label (default: 80)
+        learning_rate (float): normalized-gradient step size (default: 0.4)
+        label_noise (float): label-flip probability in the synthetic VANET safety task (default: 0.1)
+        seed (int | None): RNG seed for the synthetic dataset (default: None, i.e. random)
+    """
+    global logger
+    try:
+        params = params or {}
+        known_size = int(params.get('known_size', 39))
+        max_iterations = int(params.get('max_iterations', 80))
+        learning_rate = float(params.get('learning_rate', 0.4))
+        label_noise = float(params.get('label_noise', 0.1))
+        seed = params.get('seed', None)
+        seed = int(seed) if seed is not None else None
+
+        X_full, y_full = _sample_database_reconstruction_data(known_size + 1, label_noise=label_noise, seed=seed)
+        missing_idx = 0
+        missing_row, missing_label = X_full[missing_idx].copy(), y_full[missing_idx]
+        known_X = np.delete(X_full, missing_idx, axis=0)
+        known_y = np.delete(y_full, missing_idx, axis=0)
+
+        target = DatabaseTargetModel()
+        target.fit(X_full, y_full)
+
+        attack = DatabaseReconstructionAttack(
+            max_iterations=max_iterations,
+            learning_rate=learning_rate,
+        )
+        result = attack.reconstruct(target, known_X, known_y)
+
+        feature_error = float(np.linalg.norm(np.array(result["reconstructed_features"]) - missing_row))
+        label_recovered = bool(result["candidate_label"] == float(missing_label))
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(EXTRACTIONS_DIR, f"database_reconstruction_{timestamp}.json")
+        attack.save_to_file(out_path)
+
+        logger.info(
+            f"🕵️ DATABASE RECONSTRUCTION: label_recovered={label_recovered} "
+            f"feature_l2_error={feature_error:.3f}, retrain_queries={attack.threat_model.gradient_queries}, wrote {out_path}"
+        )
+
+        return {
+            "status": "Database Reconstruction attack complete",
+            "note": "No SUMO/TraCI state was modified -- this attack only retrained candidate models offline and queried the real target's output on the known rows.",
+            "attack_model_file": out_path,
+            "true_missing_row": missing_row.tolist(),
+            "true_missing_label": float(missing_label),
+            "reconstructed_row": result["reconstructed_features"],
+            "reconstructed_label": result["candidate_label"],
+            "feature_l2_error": feature_error,
+            "label_recovered": label_recovered,
+            **attack.get_statistics(),
+        }
+    except Exception as e:
+        logger.error(f"Database Reconstruction attack error: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return {"error": str(e)}

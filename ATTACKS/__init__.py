@@ -12,6 +12,7 @@ from .knockoff_nets import KnockoffNetsAttack, create_knockoffnets_attack
 from .attribute_inference_black_box import AttributeInferenceBlackBoxAttack, create_attribute_inference_black_box_attack
 from .membership_inference_black_box import MembershipInferenceBlackBoxAttack, MembershipInferenceTargetModel, create_membership_inference_black_box_attack
 from .miface import MIFaceAttack, create_miface_attack
+from .database_reconstruction import DatabaseReconstructionAttack, DatabaseTargetModel, create_database_reconstruction_attack
 # from .badnets import BadNetsAttack
 
 __all__ = [
@@ -32,5 +33,8 @@ __all__ = [
     "create_membership_inference_black_box_attack",
     "MIFaceAttack",
     "create_miface_attack",
+    "DatabaseReconstructionAttack",
+    "DatabaseTargetModel",
+    "create_database_reconstruction_attack",
     # "BadNetsAttack",
 ]
